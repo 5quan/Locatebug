@@ -5,9 +5,10 @@ import type { ChatMessage } from "./llm.ts";
 import { tools } from "./tools.ts";
 import {
   appendMessage,
+  appendTitle,
   createSession,
   listSessions,
-  loadSession,
+  readSession,
 } from "./session-store.ts";
 
 async function main(): Promise<void> {
@@ -45,8 +46,10 @@ async function runOneTurn(userMessage: string, sessionArg?: string): Promise<voi
   // 1. 确定会话：续聊用传入 id，否则新建一个
   const sessionId = sessionArg ?? (await createSession());
 
-  // 2. 从日志重放历史；system 不入日志，每次运行重新注入到最前面
-  const history = await loadSession(sessionId);
+  // 2. 一次 readSession 同时拿到 messages / title / sandboxMode。
+  //    system 不入日志，每次运行重新注入到最前面。
+  const state = await readSession(sessionId);
+  const history = state.messages;
   const systemMsg: ChatMessage = { role: "system", content: "" };
   const userMsg: ChatMessage = { role: "user", content: userMessage };
   const fullContext: ChatMessage[] = [systemMsg, ...history, userMsg];
@@ -55,11 +58,16 @@ async function runOneTurn(userMessage: string, sessionArg?: string): Promise<voi
   //    日志是 append-only，绝不能把整个 fullContext 再存一遍。
   await appendMessage(sessionId, userMsg);
 
-  // 4. step() 会原地往 fullContext 里 push 本轮产生的 assistant/tool 消息
+  // 4. 没有 title 才追加 title。判断依据是日志状态，而不是"有没有历史消息"。
+  if (state.title === undefined) {
+    await appendTitle(sessionId, userMessage);
+  }
+
+  // 5. step() 会原地往 fullContext 里 push 本轮产生的 assistant/tool 消息
   const before = fullContext.length;
   await step(fullContext, tools);
 
-  // 5. 只有 step 之后新增的消息需要追加
+  // 6. 只有 step 之后新增的消息需要追加
   const added = fullContext.slice(before);
   for (const msg of added) {
     await appendMessage(sessionId, msg);

@@ -2,7 +2,31 @@
 // 标准四件套（对齐 pi 默认）：read / write / edit / bash
 import { spawnSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
+import { resolve, sep } from "node:path";
 import type { ToolDef } from "./llm.ts";
+
+// read / write / edit 只能访问这个目录以内。
+// 用 resolve() 把相对路径和 .. 都展开成绝对路径，再判断是否越界。
+const PROJECT_ROOT = resolve(process.cwd());
+
+function resolveInsideProject(raw: unknown): string {
+  const input = typeof raw === "string" ? raw.trim() : "";
+  if (!input) {
+    throw new Error("path 不能为空");
+  }
+
+  const absolute = resolve(PROJECT_ROOT, input);
+
+  // Windows 盘符大小写不敏感，统一小写比较，并补上分隔符防止 D:\project\pi-demo-other 混过去。
+  const root = PROJECT_ROOT.toLowerCase();
+  const target = absolute.toLowerCase();
+  const inside = target === root || target.startsWith(root.endsWith(sep) ? root : root + sep);
+
+  if (!inside) {
+    throw new Error(`路径越界，只允许访问项目目录内：${input}`);
+  }
+  return absolute;
+}
 
 // 一个可执行工具 = 定义(告诉模型怎么用) + run(真正干活)
 export interface Tool {
@@ -29,7 +53,7 @@ export const tools: Tool[] = [
       },
     },
     run: async (args) => {
-      return await readFile(String(args.path ?? ""), "utf-8");
+      return await readFile(resolveInsideProject(args.path), "utf-8");
     },
   },
 
@@ -52,7 +76,7 @@ export const tools: Tool[] = [
       },
     },
     run: async (args) => {
-      await writeFile(String(args.path ?? ""), String(args.content ?? ""));
+      await writeFile(resolveInsideProject(args.path), String(args.content ?? ""));
       return "已写入";
     },
   },
@@ -77,7 +101,7 @@ export const tools: Tool[] = [
       },
     },
     run: async (args) => {
-      const path = String(args.path ?? "");
+      const path = resolveInsideProject(args.path);
       const oldStr = String(args.old_string ?? "");
       const newStr = String(args.new_string ?? "");
       const content = await readFile(path, "utf-8");

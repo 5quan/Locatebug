@@ -10,15 +10,25 @@
 - [x] 标准四件套工具：`read` / `write` / `edit` / `bash`
 - [x] key 写入本地 `src/config.ts`
 - [x] 一次性问答入口 `main.ts`
+- [x] 会话存盘（JSONL 事件溯源）
+  - `.sessions/<id>.jsonl`，第一行 header
+  - 每行事件带 `seq` / `time`
+  - `message` / `title` / `sandbox/mode` 三种事件
+  - `readSession()` 一次 fold 出 `messages` / `title` / `sandboxMode`
+  - CLI：默认新建，`--session <id>` 续聊，`--list` 列表
+- [x] 基础路径安全：`read` / `write` / `edit` 限制在项目目录内（仅字符串级，还没有 sandbox 模式与审批）
+
+## 当前进行
+
+- [ ] **HTTP 后端 + 纯 HTML/JS 前端**：会话列表 + 切换 + 聊天
 
 ## 待做（按优先级）
 
-1. [ ] **会话存盘** —— 把 messages 存盘，下次续聊（多轮 / 重复对话）
+1. [ ] **权限控制完整化** —— sandbox 三模式（read-only / workspace-write / danger-full-access）+ 审批（ask / never）+ 会话内切换
 2. [ ] **多 agent** —— 两个 agent（研究员 + 执行者）消息传递协作
-3. [ ] **路径安全校验** —— read/write/edit 限制在项目目录内
-4. [ ] **事件流** —— 同步 step 改成发事件（pi/dsh 的核心机制）
-5. [ ] **流式输出**
-6. [ ] **上下文压缩 compaction**
+3. [ ] **事件流** —— 同步 step 改成发事件（pi/dsh 的核心机制）
+4. [ ] **流式输出**
+5. [ ] **上下文压缩 compaction**
 
 ## 概念备忘
 
