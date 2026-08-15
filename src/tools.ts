@@ -2,7 +2,8 @@
 // 模型只能"请求"调用工具，真正执行的是我们在这里写的代码。
 // 想加新能力，就往 tools 数组里再塞一项即可。
 
-import { readFile } from "node:fs/promises";
+import { readFile , readdir} from "node:fs/promises";
+await readdir(".")   // → ["agent.ts", "llm.ts", "tools.ts", ...]
 import type { ToolDef } from "./llm.ts";
 
 // 一个可执行工具 = 定义(告诉模型怎么用) + run(真正干活)
@@ -46,4 +47,25 @@ export const tools: Tool[] = [
       return await readFile(path, "utf-8");
     },
   },
+  {
+    def: {
+      type: "function",
+      function: {
+        name: "list_dir",
+        description: "列出目录中的文件和子目录。",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "要列出的目录路径" },
+          },
+          required: ["path"],
+          additionalProperties: false,
+        },
+      },
+    },
+run: async (args) => {
+  const path = String(args.path ?? "");
+  const files = await readdir(path);  // 拿到文件名数组
+  return files.join("\n");            // 拼成多行文本
+},  }
 ];

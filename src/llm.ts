@@ -43,7 +43,6 @@ export interface LlmResponse {
   finishReason: string | null; // stop=正常结束，tool_calls=想调工具
 }
 
-// ---------- 配置（全部通过环境变量覆盖，代码里不写死 key） ----------
 
 const BASE_URL = process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com";
 const MODEL = process.env.DEEPSEEK_MODEL ?? "deepseek-chat";

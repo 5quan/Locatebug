@@ -6,5 +6,9 @@
   "scripts": {
     "start": "node src/main.ts",
     "chat": "node src/repl.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2"
   }
 }
