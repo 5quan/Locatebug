@@ -3,14 +3,14 @@ import { runAgent } from "./agent.ts";
 import { tools } from "./tools.ts";
 
 // 第一个命令行参数是提问；不传就用默认问题
-const userMessage = process.argv[2] ?? "现在几点？顺便读一下 README.md";
+const userMessage = process.argv[2] ?? "读一下 README.md，告诉我这个项目是干嘛的";
 
 console.log("用户提问：" + userMessage + "\n");
 
 try {
   const messages = await runAgent({
     systemPrompt:
-      "需要实时信息就调用 get_current_time，需要文件内容就调用 read_file。",
+      "回答我的话，可以使用工具。工具的调用请求会以 tool_calls 的形式返回给我，我会帮你执行工具并把结果返回给你。",
     userMessage,
     tools,
   });
