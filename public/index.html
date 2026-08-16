@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>pi-demo</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0d1117;
+      --panel: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #1f6feb;
+      --user-bubble: #1f6feb;
+      --tool-bg: #11161d;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+
+    body { display: flex; }
+
+    /* ---------- sidebar ---------- */
+    .sidebar {
+      width: 280px;
+      min-width: 280px;
+      height: 100%;
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .sidebar-header {
+      padding: 14px;
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+      font-size: 15px;
+    }
+
+    .new-session {
+      margin: 12px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #21262d;
+      color: var(--text);
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .new-session:hover { background: #30363d; }
+
+    .session-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0 8px 12px;
+    }
+
+    .session-item {
+      padding: 10px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      margin-bottom: 2px;
+    }
+
+    .session-item:hover { background: #21262d; }
+    .session-item.active { background: #1f2937; }
+
+    .session-title {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .session-id {
+      color: var(--muted);
+      font-size: 11px;
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ---------- main ---------- */
+    .main {
+      flex: 1;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .main-header {
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+    }
+
+    .error-banner {
+      display: none;
+      margin: 8px 16px 0;
+      padding: 8px 12px;
+      border: 1px solid #f85149;
+      border-radius: 8px;
+      color: #ffa198;
+      background: #2d1518;
+    }
+
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px 18px;
+    }
+
+    .message {
+      margin-bottom: 14px;
+      max-width: 76%;
+    }
+
+    .message .role {
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 4px;
+    }
+
+    .message.user {
+      margin-left: auto;
+    }
+
+    .message.user .role { text-align: right; }
+
+    .message .content {
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .message.user .content {
+      background: var(--user-bubble);
+      border-color: var(--user-bubble);
+    }
+
+    .message.tool .content {
+      background: var(--tool-bg);
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 12px;
+      max-height: 260px;
+      overflow-y: auto;
+      color: #a5d6ff;
+    }
+
+    .tool-calls {
+      margin-top: 6px;
+      font-size: 12px;
+      color: #79c0ff;
+    }
+
+    /* ---------- composer ---------- */
+    .composer {
+      border-top: 1px solid var(--border);
+      padding: 12px 16px;
+      display: flex;
+      gap: 10px;
+      background: var(--panel);
+    }
+
+    .composer textarea {
+      flex: 1;
+      resize: none;
+      height: 52px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      font: inherit;
+      outline: none;
+    }
+
+    .composer textarea:focus { border-color: var(--accent); }
+
+    .composer button {
+      border: 0;
+      border-radius: 10px;
+      padding: 0 20px;
+      background: var(--accent);
+      color: #fff;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .composer button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .empty-tip {
+      color: var(--muted);
+      text-align: center;
+      margin-top: 30vh;
+    }
+  </style>
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="sidebar-header">pi-demo</div>
+    <button class="new-session" id="new-session">＋ 新建会话</button>
+    <div class="session-list" id="session-list"></div>
+  </aside>
+
+  <main class="main">
+    <div class="main-header" id="main-header">未选择会话</div>
+    <div class="error-banner" id="error-banner"></div>
+    <div class="messages" id="messages">
+      <div class="empty-tip">选择左侧会话，或新建一个会话开始聊天</div>
+    </div>
+    <div class="composer">
+      <textarea id="input" placeholder="输入问题，Enter 发送，Shift+Enter 换行"></textarea>
+      <button id="send" disabled>发送</button>
+    </div>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const sessionListEl = $("session-list");
+    const messagesEl = $("messages");
+    const headerEl = $("main-header");
+    const inputEl = $("input");
+    const sendEl = $("send");
+    const newSessionEl = $("new-session");
+    const errorEl = $("error-banner");
+
+    let currentSessionId = null;
+    let sending = false;
+
+    function escapeHtml(text) {
+      return text
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function showError(text) {
+      errorEl.textContent = text;
+      errorEl.style.display = "block";
+      setTimeout(() => { errorEl.style.display = "none"; }, 6000);
+    }
+
+    async function api(path, options) {
+      const res = await fetch(path, options);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      return data;
+    }
+
+    // ---------- 会话列表 ----------
+    async function refreshSessions() {
+      const { sessions } = await api("/api/sessions");
+      sessionListEl.replaceChildren();
+
+      if (sessions.length === 0) {
+        const tip = document.createElement("div");
+        tip.className = "session-item";
+        tip.textContent = "（暂无会话）";
+        sessionListEl.append(tip);
+        return;
+      }
+
+      for (const session of sessions) {
+        const item = document.createElement("div");
+        item.className = "session-item" + (session.id === currentSessionId ? " active" : "");
+
+        const title = document.createElement("div");
+        title.className = "session-title";
+        title.textContent = session.title || "(空会话)";
+
+        const id = document.createElement("div");
+        id.className = "session-id";
+        id.textContent = session.id;
+
+        item.append(title, id);
+        item.addEventListener("click", () => selectSession(session.id));
+        sessionListEl.append(item);
+      }
+    }
+
+    async function newSession() {
+      try {
+        const { id } = await api("/api/sessions", { method: "POST" });
+        currentSessionId = id;
+        await refreshSessions();
+        renderMessages([]);
+        headerEl.textContent = "新会话";
+        sendEl.disabled = false;
+        inputEl.focus();
+      } catch (error) {
+        showError(error.message);
+      }
+    }
+
+    // ---------- 消息 ----------
+    async function selectSession(id) {
+      currentSessionId = id;
+      await refreshSessions();
+      const data = await api(`/api/sessions/${id}/messages`);
+      headerEl.textContent = `${data.title}  ·  ${data.messages.length} 条消息`;
+      renderMessages(data.messages);
+      sendEl.disabled = false;
+    }
+
+    function renderMessages(messages) {
+      messagesEl.replaceChildren();
+
+      if (messages.length === 0) {
+        const tip = document.createElement("div");
+        tip.className = "empty-tip";
+        tip.textContent = "这是一个空会话，开始提问吧";
+        messagesEl.append(tip);
+        return;
+      }
+
+      for (const msg of messages) {
+        const wrap = document.createElement("div");
+        wrap.className = "message " + msg.role;
+
+        const role = document.createElement("div");
+        role.className = "role";
+        role.textContent = msg.role === "tool"
+          ? "tool"
+          : msg.role === "user" ? "你" : "assistant";
+        wrap.append(role);
+
+        if (msg.role === "assistant" && msg.content === null) {
+          const content = document.createElement("div");
+          content.className = "content";
+          content.textContent = "（调用工具中）";
+          wrap.append(content);
+        } else if (msg.role === "assistant") {
+          const content = document.createElement("div");
+          content.className = "content";
+          content.textContent = msg.content || "(无文字内容)";
+          wrap.append(content);
+        } else if (msg.role === "tool") {
+          const content = document.createElement("div");
+          content.className = "content";
+          content.textContent = msg.content;
+          wrap.append(content);
+        } else {
+          const content = document.createElement("div");
+          content.className = "content";
+          content.textContent = msg.content;
+          wrap.append(content);
+        }
+
+        if (msg.role === "assistant" && msg.tool_calls?.length) {
+          const calls = document.createElement("div");
+          calls.className = "tool-calls";
+          calls.textContent = "调用工具：" + msg.tool_calls.map((call) => call.function.name).join(", ");
+          wrap.append(calls);
+        }
+
+        messagesEl.append(wrap);
+      }
+
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    // ---------- 发送 ----------
+    async function send() {
+      const content = inputEl.value.trim();
+      if (!content || sending) return;
+      if (!currentSessionId) {
+        await newSession();
+        if (!currentSessionId) return;
+      }
+
+      sending = true;
+      sendEl.disabled = true;
+      inputEl.value = "";
+
+      try {
+        const data = await api(`/api/sessions/${currentSessionId}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content }),
+        });
+        await selectSession(data.sessionId);
+        await refreshSessions();
+      } catch (error) {
+        inputEl.value = content;
+        showError(error.message);
+      } finally {
+        sending = false;
+        sendEl.disabled = false;
+      }
+    }
+
+    sendEl.addEventListener("click", send);
+    newSessionEl.addEventListener("click", newSession);
+    inputEl.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        void send();
+      }
+    });
+
+    refreshSessions().catch((error) => showError(error.message));
+  </script>
+</body>
+</html>

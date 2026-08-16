@@ -1,20 +1,10 @@
-// 入口：把"一次 agent 回答"接到"持久会话"上。
-// 默认新建会话；--session <id> 续聊；--list 列出所有会话。
-import { step } from "./agent.ts";
-import type { ChatMessage } from "./llm.ts";
-import { tools } from "./tools.ts";
-import {
-  appendMessage,
-  appendTitle,
-  createSession,
-  listSessions,
-  readSession,
-} from "./session-store.ts";
+// CLI 入口：默认新建会话；--session <id> 续聊；--list 列出所有会话。
+import { createSession, listSessions } from "./session-store.ts";
+import { runUserTurn } from "./turn.ts";
 
 async function main(): Promise<void> {
   const args = parseArgs();
 
-  // --list：只看目录，不调用模型
   if (args.list) {
     const sessions = await listSessions();
     console.log("===== 会话列表 =====");
@@ -39,46 +29,15 @@ async function main(): Promise<void> {
     return;
   }
 
-  await runOneTurn(userMessage, args.sessionArg);
-}
+  const sessionId = args.sessionArg ?? (await createSession());
+  const result = await runUserTurn(sessionId, userMessage);
 
-async function runOneTurn(userMessage: string, sessionArg?: string): Promise<void> {
-  // 1. 确定会话：续聊用传入 id，否则新建一个
-  const sessionId = sessionArg ?? (await createSession());
-
-  // 2. 一次 readSession 同时拿到 messages / title / sandboxMode。
-  //    system 不入日志，每次运行重新注入到最前面。
-  const state = await readSession(sessionId);
-  const history = state.messages;
-  const systemMsg: ChatMessage = { role: "system", content: "" };
-  const userMsg: ChatMessage = { role: "user", content: userMessage };
-  const fullContext: ChatMessage[] = [systemMsg, ...history, userMsg];
-
-  // 3. 先只追加"这一条"新 user 消息。
-  //    日志是 append-only，绝不能把整个 fullContext 再存一遍。
-  await appendMessage(sessionId, userMsg);
-
-  // 4. 没有 title 才追加 title。判断依据是日志状态，而不是"有没有历史消息"。
-  if (state.title === undefined) {
-    await appendTitle(sessionId, userMessage);
-  }
-
-  // 5. step() 会原地往 fullContext 里 push 本轮产生的 assistant/tool 消息
-  const before = fullContext.length;
-  await step(fullContext, tools);
-
-  // 6. 只有 step 之后新增的消息需要追加
-  const added = fullContext.slice(before);
-  for (const msg of added) {
-    await appendMessage(sessionId, msg);
-  }
-
-  console.log(`会话：${sessionId}${sessionArg ? "（续）" : "（新建）"}`);
-  console.log(`历史消息：${history.length} 条（不含 system）`);
-  console.log(`本轮新增：${added.length} 条\n`);
+  console.log(`会话：${result.sessionId}${args.sessionArg ? "（续）" : "（新建）"}`);
+  console.log(`历史消息：${result.historyCount} 条（不含 system）`);
+  console.log(`本轮新增：${result.added.length} 条\n`);
 
   console.log("===== 本轮新增消息 =====");
-  for (const msg of added) {
+  for (const msg of result.added) {
     if (msg.role === "tool") {
       console.log(`[tool #${msg.tool_call_id}] ${ellipsize(msg.content)}`);
     } else {
@@ -86,11 +45,8 @@ async function runOneTurn(userMessage: string, sessionArg?: string): Promise<voi
     }
   }
 
-  const last = fullContext[fullContext.length - 1];
   console.log("\n===== 最终回复 =====\n");
-  console.log(
-    last?.role === "assistant" ? (last.content ?? "(无文字内容)") : "(无回复)",
-  );
+  console.log(result.final || "(无回复)");
 }
 
 function parseArgs(): { sessionArg?: string; list: boolean; userMessage: string } {
@@ -127,4 +83,5 @@ main().catch((error) => {
   );
   process.exitCode = 1;
 });
+
 

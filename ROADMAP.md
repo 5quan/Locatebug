@@ -6,17 +6,17 @@
 
 ## 已完成 ✅
 
-- [x] 核心循环 `step()`：问模型 → 调工具 → 回填 → 再问
-- [x] 标准四件套工具：`read` / `write` / `edit` / `bash`
-- [x] key 写入本地 `src/config.ts`
-- [x] 一次性问答入口 `main.ts`
-- [x] 会话存盘（JSONL 事件溯源）
+- [X] 核心循环 `step()`：问模型 → 调工具 → 回填 → 再问
+- [X] 标准四件套工具：`read` / `write` / `edit` / `bash`
+- [X] key 写入本地 `src/config.ts`
+- [X] 一次性问答入口 `main.ts`
+- [X] 会话存盘（JSONL 事件溯源）
   - `.sessions/<id>.jsonl`，第一行 header
   - 每行事件带 `seq` / `time`
   - `message` / `title` / `sandbox/mode` 三种事件
   - `readSession()` 一次 fold 出 `messages` / `title` / `sandboxMode`
   - CLI：默认新建，`--session <id>` 续聊，`--list` 列表
-- [x] 基础路径安全：`read` / `write` / `edit` 限制在项目目录内（仅字符串级，还没有 sandbox 模式与审批）
+- [X] 基础路径安全：`read` / `write` / `edit` 限制在项目目录内（仅字符串级，还没有 sandbox 模式与审批）
 
 ## 当前进行
 
@@ -24,8 +24,11 @@
 
 ## 待做（按优先级）
 
-1. [ ] **权限控制完整化** —— sandbox 三模式（read-only / workspace-write / danger-full-access）+ 审批（ask / never）+ 会话内切换
-2. [ ] **多 agent** —— 两个 agent（研究员 + 执行者）消息传递协作
+1. [ ] ~~**权限控制完整化** —— sandbox 三模式（read-only / workspace-write / danger-full-access）+ 审批（ask / never）+ 会话内切换~~
+
+权限先不做，默认放开
+
+1. [ ] **多 agent** —— 两个 agent（研究员 + 执行者）消息传递协作
 3. [ ] **事件流** —— 同步 step 改成发事件（pi/dsh 的核心机制）
 4. [ ] **流式输出**
 5. [ ] **上下文压缩 compaction**
@@ -68,14 +71,14 @@
 
 ### 与 dsh 包结构的对照
 
-| 架构层 | dsh 对应包 |
-|---|---|
-| 接入层 | `packages/api/gateway` |
-| 会话存储 | `packages/session` |
-| 沙箱 | `packages/e2b` + `native/landlock-run` |
-| 模型网关 | `packages/llm` |
-| 鉴权 | `packages/credentials` + `packages/interaction` |
-| 多 agent | `packages/subagent`、`workflow`、`goal` |
+| 架构层   | dsh 对应包                                          |
+| -------- | --------------------------------------------------- |
+| 接入层   | `packages/api/gateway`                            |
+| 会话存储 | `packages/session`                                |
+| 沙箱     | `packages/e2b` + `native/landlock-run`          |
+| 模型网关 | `packages/llm`                                    |
+| 鉴权     | `packages/credentials` + `packages/interaction` |
+| 多 agent | `packages/subagent`、`workflow`、`goal`       |
 
 ### 语言选择
 
