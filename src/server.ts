@@ -43,6 +43,12 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
   }
 
+  // ---- 流式执行一个会话 ----
+  const streamMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/stream$/);
+  if (streamMatch && method === "POST") {
+    return handleStreamTurn(req, res, decodeURIComponent(streamMatch[1]));
+  }
+
   // ---- 读取 / 追加一个会话的消息 ----
   const match = url.pathname.match(/^\/api\/sessions\/([^/]+)\/messages$/);
   if (match) {
@@ -88,6 +94,72 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   sendJson(res, 404, { error: `未找到：${method} ${url.pathname}` });
+}
+
+// POST /api/sessions/:id/stream
+// 以 SSE 形式把模型文字和工具执行过程推给浏览器。
+async function handleStreamTurn(req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
+  if (runningSessions.has(id)) {
+    sendJson(res, 409, { error: "这个会话正在处理中，请稍候" });
+    return;
+  }
+
+  const body = await readJson(req);
+  const content = typeof body.content === "string" ? body.content.trim() : "";
+  if (!content) {
+    sendJson(res, 400, { error: "content 不能为空" });
+    return;
+  }
+
+  runningSessions.add(id);
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  const writeEvent = (event: unknown): void => {
+    if (!res.destroyed) {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    }
+  };
+
+  writeEvent({ type: "start", sessionId: id });
+
+  try {
+    const result = await runUserTurn(id, content, {
+      onAssistantText(text) {
+        writeEvent({ type: "text", text });
+      },
+      onToolStart(name, argsJson) {
+        writeEvent({ type: "tool_start", name, argsJson });
+      },
+      onToolResult(name, toolOutput) {
+        // 只推一个预览，完整结果最终仍从会话日志读取。
+        const preview = toolOutput.length > 4000
+          ? toolOutput.slice(0, 4000) + "\n…(已截断)"
+          : toolOutput;
+        writeEvent({ type: "tool_result", name, content: preview });
+      },
+    });
+
+    writeEvent({
+      type: "done",
+      sessionId: id,
+      historyCount: result.historyCount,
+      addedCount: result.added.length,
+      final: result.final,
+    });
+  } catch (error) {
+    writeEvent({
+      type: "error",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    runningSessions.delete(id);
+    res.end();
+  }
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {

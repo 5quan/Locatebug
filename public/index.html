@@ -376,8 +376,8 @@
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
-    // ---------- 发送 ----------
-    async function send() {
+    // ---------- 旧的非流式发送（保留备用，当前未调用） ----------
+    async function sendLegacy() {
       const content = inputEl.value.trim();
       if (!content || sending) return;
       if (!currentSessionId) {
@@ -405,6 +405,146 @@
         sendEl.disabled = false;
       }
     }
+
+      // ---------- 流式发送（当前实际使用） ----------
+      function clearEmptyTip() {
+        const tip = messagesEl.querySelector(".empty-tip");
+        if (tip) tip.remove();
+      }
+
+      function appendLiveMessage(role, label, text) {
+        clearEmptyTip();
+
+        const wrap = document.createElement("div");
+        wrap.className = "message " + role;
+
+        const roleEl = document.createElement("div");
+        roleEl.className = "role";
+        roleEl.textContent = label;
+        wrap.append(roleEl);
+
+        const content = document.createElement("div");
+        content.className = "content";
+        content.textContent = text;
+        wrap.append(content);
+
+        messagesEl.append(wrap);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+        return { wrap, content };
+      }
+
+      function parseSseBlock(block) {
+        for (const rawLine of block.split("\n")) {
+          const line = rawLine.trim();
+          if (!line.startsWith("data:")) continue;
+          return JSON.parse(line.slice(5).trim());
+        }
+        return null;
+      }
+
+      async function send() {
+        const content = inputEl.value.trim();
+        if (!content || sending) return;
+        if (!currentSessionId) {
+          await newSession();
+          if (!currentSessionId) return;
+        }
+
+        sending = true;
+        sendEl.disabled = true;
+        inputEl.value = "";
+        let streamStarted = false;
+        const sessionId = currentSessionId;
+
+        try {
+          const res = await fetch(`/api/sessions/${sessionId}/stream`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content }),
+          });
+
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.error || `HTTP ${res.status}`);
+          }
+          if (!res.body) throw new Error("浏览器不支持读取流式响应");
+
+          streamStarted = true;
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+
+          let liveAssistant = null;
+          let liveAssistantContent = null;
+
+          const handleEvent = (event) => {
+            switch (event.type) {
+              case "start":
+                break;
+
+              case "text": {
+                if (!liveAssistant) {
+                  const bubble = appendLiveMessage("assistant", "assistant", "");
+                  liveAssistant = bubble.wrap;
+                  liveAssistantContent = bubble.content;
+                }
+                liveAssistantContent.append(document.createTextNode(event.text));
+                messagesEl.scrollTop = messagesEl.scrollHeight;
+                break;
+              }
+
+              case "tool_start":
+                  liveAssistant = null;
+                  liveAssistantContent = null;
+                appendLiveMessage("tool", `tool · ${event.name}`, "正在执行…");
+                break;
+
+              case "tool_result":
+                  liveAssistant = null;
+                  liveAssistantContent = null;
+                appendLiveMessage("tool", `tool · ${event.name}`, event.content || "(无输出)");
+                break;
+
+              case "error":
+                throw new Error(event.error || "执行失败");
+            }
+          };
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+
+            let boundary = buffer.indexOf("\n\n");
+            while (boundary !== -1) {
+              const block = buffer.slice(0, boundary);
+              buffer = buffer.slice(boundary + 2);
+
+              const event = parseSseBlock(block);
+              if (event) handleEvent(event);
+
+              boundary = buffer.indexOf("\n\n");
+            }
+          }
+
+          buffer += decoder.decode();
+          if (buffer.trim()) {
+            const event = parseSseBlock(buffer);
+            if (event) handleEvent(event);
+          }
+
+          // 流结束后，用日志里的"正式历史"重绘一次，保证 UI 和落盘一致。
+          await selectSession(sessionId);
+          await refreshSessions();
+        } catch (error) {
+          if (!streamStarted) inputEl.value = content;
+          showError(error.message);
+        } finally {
+          sending = false;
+          sendEl.disabled = false;
+        }
+      }
 
     sendEl.addEventListener("click", send);
     newSessionEl.addEventListener("click", newSession);

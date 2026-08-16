@@ -1,6 +1,6 @@
 // 一轮用户消息：从会话日志读历史，追加 user，跑 agent，再追加本轮新增消息。
 // CLI 和 HTTP server 共用这一份逻辑，保证两条入口行为一致。
-import { step } from "./agent.ts";
+import { step, type StepHandlers } from "./agent.ts";
 import type { ChatMessage } from "./llm.ts";
 import {
   appendMessage,
@@ -16,7 +16,11 @@ export interface TurnResult {
   final: string;
 }
 
-export async function runUserTurn(sessionId: string, userMessage: string): Promise<TurnResult> {
+export async function runUserTurn(
+  sessionId: string,
+  userMessage: string,
+  handlers: StepHandlers = {},
+): Promise<TurnResult> {
   // 1. 一次 readSession 同时拿到 messages / title / sandboxMode。
   const state = await readSession(sessionId);
   const history = state.messages;
@@ -34,9 +38,9 @@ export async function runUserTurn(sessionId: string, userMessage: string): Promi
     await appendTitle(sessionId, userMessage);
   }
 
-  // 5. step() 原地推进 fullContext：追加 assistant / tool 消息。
+  // 5. step() 原地推进 fullContext，并把 token / 工具事件透传给上层。
   const before = fullContext.length;
-  await step(fullContext, tools);
+  await step(fullContext, tools, 10, handlers);
 
   // 6. 只有 step 之后新增的消息需要追加。
   const added = fullContext.slice(before);

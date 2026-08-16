@@ -2,7 +2,7 @@ import { DEEPSEEK_API_KEY } from "./config.ts";
 
 // 与模型对话的"唯一通道"。
 // 这里用原生 fetch 手写 OpenAI 兼容协议的请求，不依赖任何 SDK。
-// 对应 pi 里 agent-core 的 StreamFn 角色，但做成了最简、非流式版。
+// 对应 pi 里 agent-core 的 StreamFn 角色，但做成了最简版：非流式 + 流式两个通道。
 
 // ---------- 类型定义（OpenAI 兼容协议里我们需要的最小子集） ----------
 
@@ -20,6 +20,7 @@ export type ChatMessage =
 export interface ToolCall {
   id: string;
   type: "function";
+  index?: number;
   function: {
     name: string; // 工具名
     arguments: string; // 参数，是一段 JSON 字符串
@@ -93,5 +94,127 @@ export async function callLlm(messages: ChatMessage[], tools: ToolDef[]): Promis
     content: msg?.content ?? null,
     toolCalls: msg?.tool_calls ?? [],
     finishReason: choice?.finish_reason ?? null,
+  };
+}
+
+// ---------- 流式调用 ----------
+// 后端以 SSE 形式吐 token；这里把 delta 拼成完整的 content 和 tool_calls，
+// 同时通过 onText 把每个文字片段实时交给上层（最终交给浏览器）。
+export async function callLlmStream(
+  messages: ChatMessage[],
+  tools: ToolDef[],
+  onText?: (text: string) => void,
+): Promise<LlmResponse> {
+  const apiKey = process.env.DEEPSEEK_API_KEY ?? DEEPSEEK_API_KEY;
+  if (!apiKey) {
+    throw new Error("缺少 API key：请在 src/config.ts 里填 DEEPSEEK_API_KEY，或设置环境变量 DEEPSEEK_API_KEY。");
+  }
+
+  const res = await fetch(`${BASE_URL}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      messages,
+      tools: tools.length > 0 ? tools : undefined,
+      stream: true,
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`模型接口返回错误 (HTTP ${res.status}): ${text}`);
+  }
+
+  if (!res.body) {
+    throw new Error("模型接口没有返回流式 body");
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const toolCallsByIndex = new Map<number, ToolCall>();
+
+  let content = "";
+  let finishReason: string | null = null;
+  let buffer = "";
+
+  const processLine = (rawLine: string): void => {
+    const line = rawLine.trim();
+    if (!line.startsWith("data:")) return;
+
+    const data = line.slice(5).trim();
+    if (data === "" || data === "[DONE]") return;
+
+    const chunk = JSON.parse(data) as {
+      choices?: Array<{
+        finish_reason?: string | null;
+        delta?: {
+          content?: string | null;
+          tool_calls?: Array<{
+            index?: number;
+            id?: string;
+            type?: string;
+            function?: { name?: string; arguments?: string };
+          }>;
+        };
+      }>;
+    };
+
+    const delta = chunk.choices?.[0]?.delta;
+    const deltaText = delta?.content;
+    if (typeof deltaText === "string" && deltaText !== "") {
+      content += deltaText;
+      onText?.(deltaText);
+    }
+
+    for (const rawCall of delta?.tool_calls ?? []) {
+      const index = typeof rawCall.index === "number" ? rawCall.index : 0;
+      let call = toolCallsByIndex.get(index);
+
+      if (!call) {
+        call = {
+          id: rawCall.id ?? "",
+          type: "function",
+          index,
+          function: { name: "", arguments: "" },
+        };
+        toolCallsByIndex.set(index, call);
+      }
+
+      if (rawCall.id) call.id = rawCall.id;
+      if (rawCall.function?.name) call.function.name = rawCall.function.name;
+      if (rawCall.function?.arguments) call.function.arguments += rawCall.function.arguments;
+    }
+
+    const reason = chunk.choices?.[0]?.finish_reason;
+    if (typeof reason === "string") finishReason = reason;
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    let newline = buffer.indexOf("\n");
+    while (newline !== -1) {
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      if (line.trim() !== "") processLine(line);
+      newline = buffer.indexOf("\n");
+    }
+  }
+
+  buffer += decoder.decode();
+  if (buffer.trim() !== "") processLine(buffer);
+
+  return {
+    content: content === "" ? null : content,
+    toolCalls: [...toolCallsByIndex.values()],
+    finishReason,
   };
 }
