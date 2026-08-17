@@ -1,13 +1,13 @@
 // agent 循环：整个项目的"心脏"，也是 agent 最本质的那十几行。
 // 对应 pi 里的 agent-loop.ts，但去掉了事件流、队列、并行等产品级东西。
 
-import { callLlmStream, type ChatMessage, type ToolDef } from "./llm.ts";
-import type { Tool } from "./tools.ts";
+import { callLlmStream, type ChatMessage } from "./llm.ts";
+import { ToolRegistry } from "./tool-registry.ts";
 
 export interface RunOptions {
   systemPrompt: string;
   userMessage: string;
-  tools?: Tool[];
+  registry?: ToolRegistry;
   maxTurns?: number; // 防止模型一直调工具导致死循环的安全上限
 }
 
@@ -24,7 +24,7 @@ export async function runAgent(options: RunOptions): Promise<ChatMessage[]> {
     { role: "system", content: options.systemPrompt },
     { role: "user", content: options.userMessage },
   ];
-  await step(messages, options.tools ?? [], options.maxTurns ?? 10);
+  await step(messages, options.registry ?? new ToolRegistry(), options.maxTurns ?? 10);
   return messages;
 }
 
@@ -33,13 +33,13 @@ export async function runAgent(options: RunOptions): Promise<ChatMessage[]> {
 // 所以 REPL 可以一直复用同一个数组，实现"记住前面说过的话"的连续对话。
 export async function step(
   messages: ChatMessage[],
-  tools: Tool[],
+  registry: ToolRegistry,
   maxTurns = 10,
   handlers: StepHandlers = {},
 ): Promise<void> {
   // 循环：一轮 = 问模型一次 + (可能)执行它要的工具
   for (let turn = 0; turn < maxTurns; turn++) {
-    const toolDefs: ToolDef[] = tools.map((t) => t.def);
+    const toolDefs = registry.getDefinitions();
     const resp = await callLlmStream(messages, toolDefs, handlers.onAssistantText);
 
     // 把模型的回复 append 进上下文（记住它说了啥）
@@ -59,7 +59,7 @@ export async function step(
     for (const call of resp.toolCalls) {
       handlers.onToolStart?.(call.function.name, call.function.arguments);
 
-      const result = await executeTool(call.function.name, call.function.arguments, tools);
+      const result = await executeTool(call.function.name, call.function.arguments, registry);
       handlers.onToolResult?.(call.function.name, result);
 
       messages.push({
@@ -73,8 +73,8 @@ export async function step(
 }
 
 // 根据名字找到工具、解析参数、执行，并把任何失败都转成"文本"返回给模型
-async function executeTool(name: string, argsJson: string, tools: Tool[]): Promise<string> {
-  const tool = tools.find((t) => t.def.function.name === name);
+async function executeTool(name: string, argsJson: string, registry: ToolRegistry): Promise<string> {
+  const tool = registry.get(name);
   if (!tool) {
     return `错误：找不到名为 ${name} 的工具`;
   }

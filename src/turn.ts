@@ -7,7 +7,9 @@ import {
   appendTitle,
   readSession,
 } from "./session-store.ts";
-import { tools } from "./tools.ts";
+import { createDefaultToolRegistry } from "./tools.ts";
+
+const toolRegistry = createDefaultToolRegistry();
 
 export interface TurnResult {
   sessionId: string;
@@ -40,7 +42,7 @@ export async function runUserTurn(
 
   // 5. step() 原地推进 fullContext，并把 token / 工具事件透传给上层。
   const before = fullContext.length;
-  await step(fullContext, tools, 10, handlers);
+  await step(fullContext, toolRegistry, 10, handlers);
 
   // 6. 只有 step 之后新增的消息需要追加。
   const added = fullContext.slice(before);

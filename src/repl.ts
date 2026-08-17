@@ -2,11 +2,13 @@
 // 用 Node 内置的 readline，零依赖。
 import { createInterface } from "node:readline";
 import { step } from "./agent.ts";
-import { tools } from "./tools.ts";
+import { createDefaultToolRegistry } from "./tools.ts";
 import type { ChatMessage } from "./llm.ts";
 
+const toolRegistry = createDefaultToolRegistry();
+
 const SYSTEM_PROMPT =
-  "你是一个乐于助人的终端助手。需要实时信息就调用 get_current_time，需要文件内容就调用 read_file。";
+  "";
 
 const rl = createInterface({ input: process.stdin, output: process.stdout });
 
@@ -33,7 +35,7 @@ async function loop(): Promise<void> {
   messages.push({ role: "user", content: text });
 
   try {
-    await step(messages, tools);
+    await step(messages, toolRegistry);
     const last = messages[messages.length - 1];
     const answer = last?.role === "assistant" ? (last.content ?? "(无文字内容)") : "(未得到回复)";
     console.log("\n助手> " + answer + "\n");

@@ -3,7 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
-import type { ToolDef } from "./llm.ts";
+import { ToolRegistry, type Tool } from "./tool-registry.ts";
 
 // read / write / edit 只能访问这个目录以内。
 // 用 resolve() 把相对路径和 .. 都展开成绝对路径，再判断是否越界。
@@ -28,13 +28,7 @@ function resolveInsideProject(raw: unknown): string {
   return absolute;
 }
 
-// 一个可执行工具 = 定义(告诉模型怎么用) + run(真正干活)
-export interface Tool {
-  def: ToolDef;
-  run: (args: Record<string, unknown>) => Promise<string> | string;
-}
-
-export const tools: Tool[] = [
+const builtInTools: Tool[] = [
   // read：读文件
   {
     def: {
@@ -141,3 +135,8 @@ export const tools: Tool[] = [
     },
   },
 ];
+
+// 每个 agent/入口创建自己的注册表，避免共享可变的全局工具集合。
+export function createDefaultToolRegistry(): ToolRegistry {
+  return new ToolRegistry(builtInTools);
+}

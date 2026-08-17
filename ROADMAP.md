@@ -4,6 +4,22 @@
 
 用 TS + 原生 `fetch`（零依赖）亲手搭最小 agent，目标是搞懂 agent 的设计与实现，而不是复刻 pi/dsh。
 
+## 能力分层地图
+
+```text
+接入层：HTTP / CLI
+编排层：多 agent（subagent / goal / workflow）
+核心循环：step()
+上下文装配层：RAG 注入 + compaction
+工具层：def + run（read/write/edit/bash/search + MCP）
+会话存储：JSONL 事件日志
+```
+
+- **MCP 属于工具层**：把外部系统的能力注册成工具（def + run 的远程版）
+- **RAG 检索做成 tool**：模型决定何时查、查什么、怎么用结果
+- **多 agent 属于编排层**：同一循环跑多个实例，通过消息/结果协作
+
+
 ## 已完成 ✅
 
 - [X] 核心循环 `step()`：问模型 → 调工具 → 回填 → 再问
@@ -16,22 +32,60 @@
   - `message` / `title` / `sandbox/mode` 三种事件
   - `readSession()` 一次 fold 出 `messages` / `title` / `sandboxMode`
   - CLI：默认新建，`--session <id>` 续聊，`--list` 列表
+  
+  - [X] HTTP 后端 + 纯 HTML/JS 前端
+    - 会话列表 / 新建 / 切换 / 聊天
+    - API：`/api/sessions`、`/api/sessions/:id/messages`
+  
+  - [X] 流式输出
+    - `llm.ts`：`callLlmStream` 解析 SSE
+    - `agent.ts`：`step` 支持 `StepHandlers`
+    - `server.ts`：`POST /api/sessions/:id/stream`
+    - 前端：token 实时显示 + 工具执行过程实时显示
 - [X] 基础路径安全：`read` / `write` / `edit` 限制在项目目录内（仅字符串级，还没有 sandbox 模式与审批）
+  
+    
+    
+  
+    
+    
+    
+    
+  
+    
+    
+  
+    
+    
+    
+    
 
 ## 当前进行
 
-- [ ] **HTTP 后端 + 纯 HTML/JS 前端**：会话列表 + 切换 + 聊天
+- [ ] **工具层重构 + RAG search 工具**
+  1. 工具注册从"静态数组"改成"可注册"
+  2. 新增 `search` 工具：模型决定何时检索
+  3. 新增 `retriever.ts`：查询本地知识库，返回片段 + 来源
+  4. 检索过程作为 tool message 自然落盘
 
-## 待做（按优先级）
+## 已设计但暂缓 ⏸️
 
-1. [ ] ~~**权限控制完整化** —— sandbox 三模式（read-only / workspace-write / danger-full-access）+ 审批（ask / never）+ 会话内切换~~
+- [ ] 权限控制完整化：三档 sandbox 模式 + approval + OS 级 sandbox
+  - 数据基础已有：`sandbox/mode` 事件 + `readSession()` fold
+  - 暂不实现：工具层按模式判断、切换 API、页面选择器
 
-权限先不做，默认放开
+> 权限先不做，默认放开
 
-1. [ ] **多 agent** —— 两个 agent（研究员 + 执行者）消息传递协作
-3. [ ] **事件流** —— 同步 step 改成发事件（pi/dsh 的核心机制）
-4. [ ] **流式输出**
-5. [ ] **上下文压缩 compaction**
+## 待做（按依赖顺序）
+
+1. [ ] **工具可扩展化** —— 静态 tools 数组改成可注册
+2. [ ] **RAG tool** —— search 工具 + retriever + knowledge/
+3. [ ] **MCP 最小版** —— 连接 MCP server，注册为本地工具
+4. [ ] **上下文压缩 compaction** —— RAG/多 agent 吃 token，需要摘要替代旧历史
+5. [ ] **多 agent** —— 主 agent + 子 agent，复用同一 step()
+6. [ ] **事件流升级** —— handler 轻量版升级为持久化 run 事件
+7. [ ] **审批 approval**
+8. [ ] **OS 级 sandbox**
 
 ## 概念备忘
 
