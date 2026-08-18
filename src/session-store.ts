@@ -1,6 +1,6 @@
 // 会话存储：JSONL 追加日志。
 // 日志是唯一真源：第一行 header，之后每行一个事件。
-// 消息读时派生；标题也是事件，latest-wins，列表不用读全部消息。
+// 消息与模型上下文都在读取时派生；标题、权限和压缩状态都是 latest-wins。
 import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -24,6 +24,16 @@ interface MessageEvent {
   seq: number;
   time: number;
   message: ChatMessage;
+}
+
+// 压缩提交事件：旧消息仍留在原始日志中，模型上下文从 summary + firstKeptSeq 之后的消息派生。
+interface CompactionEvent {
+  type: "compaction";
+  seq: number;
+  time: number;
+  summary: string;
+  firstKeptSeq: number;
+  tokensBefore: number;
 }
 
 // 标题事件：日志里的一行，但不派生为 messages（模型看不到它）。
@@ -50,12 +60,32 @@ interface SandboxModeEvent {
   mode: SandboxMode;
 }
 
-type FileEvent = SessionHeader | MessageEvent | TitleEvent | SandboxModeEvent;
-type BodyEvent = MessageEvent | TitleEvent | SandboxModeEvent;
+type FileEvent = SessionHeader | MessageEvent | TitleEvent | SandboxModeEvent | CompactionEvent;
+type BodyEvent = MessageEvent | TitleEvent | SandboxModeEvent | CompactionEvent;
+
+export interface SessionMessageRecord {
+  seq: number;
+  message: ChatMessage;
+}
+
+export interface CompactionState {
+  eventSeq: number;
+  summary: string;
+  firstKeptSeq: number;
+  tokensBefore: number;
+}
+
+type CompactionProjection = Pick<CompactionState, "summary" | "firstKeptSeq">;
 
 // 一次完整 replay 的结果：从流水账 fold 出的全部当前状态。
 export interface SessionState {
+  // 完整原始消息，供网页展示与审计使用。
   messages: ChatMessage[];
+  // 带日志 seq 的原始消息，供压缩选择安全边界。
+  messageRecords: SessionMessageRecord[];
+  // 当前模型真正使用的历史：无压缩时等于 messages，有压缩时为 checkpoint + 近期消息。
+  contextMessages: ChatMessage[];
+  compaction?: CompactionState;
   title?: string;
   sandboxMode?: SandboxMode;
 }
@@ -90,6 +120,42 @@ export async function appendMessage(id: string, msg: ChatMessage): Promise<void>
     seq,
     time: Date.now(),
     message: msg,
+  };
+
+  await appendFile(sessionFile(id), JSON.stringify(event) + "\n", "utf-8");
+  nextSeqById.set(id, seq + 1);
+}
+
+// 只有摘要已经完整生成并通过验证后才调用本函数；单个事件就是简化版压缩的提交点。
+export async function appendCompaction(
+  id: string,
+  summary: string,
+  firstKeptSeq: number,
+  tokensBefore: number,
+): Promise<void> {
+  const normalizedSummary = summary.trim();
+  if (!normalizedSummary) {
+    throw new Error("压缩摘要不能为空");
+  }
+  if (!Number.isInteger(firstKeptSeq) || firstKeptSeq < 0) {
+    throw new Error(`非法 firstKeptSeq：${String(firstKeptSeq)}`);
+  }
+  if (!Number.isInteger(tokensBefore) || tokensBefore <= 0) {
+    throw new Error(`非法 tokensBefore：${String(tokensBefore)}`);
+  }
+
+  const seq = await nextSeq(id);
+  if (firstKeptSeq >= seq) {
+    throw new Error(`firstKeptSeq 必须指向压缩事件之前的消息：${firstKeptSeq} >= ${seq}`);
+  }
+
+  const event: CompactionEvent = {
+    type: "compaction",
+    seq,
+    time: Date.now(),
+    summary: normalizedSummary,
+    firstKeptSeq,
+    tokensBefore,
   };
 
   await appendFile(sessionFile(id), JSON.stringify(event) + "\n", "utf-8");
@@ -133,7 +199,7 @@ export async function appendSandboxMode(id: string, mode: SandboxMode): Promise<
 }
 
 // 唯一的读取入口：读文件、校验 header、重放所有事件。
-// 调用方从这里一次拿到 messages / title / sandboxMode，不再各自读文件。
+// 调用方从这里一次拿到原始 messages、模型 contextMessages 和其他折叠状态。
 export async function readSession(id: string): Promise<SessionState> {
   const events = parseLines(await readSessionText(id));
 
@@ -179,10 +245,14 @@ async function nextSeq(id: string): Promise<number> {
 //   message       → push 进 messages
 //   title         → 覆盖 title（latest-wins）
 //   sandbox/mode  → 覆盖 sandboxMode（latest-wins）
+//   compaction    → 覆盖 compaction（latest-wins）
 // 同时校验 seq 必须 0,1,2... 连续。
 function replaySession(events: BodyEvent[]): SessionState {
   const state: SessionState = {
     messages: [],
+    messageRecords: [],
+    contextMessages: [],
+    compaction: undefined,
     title: undefined,
     sandboxMode: undefined,
   };
@@ -197,6 +267,7 @@ function replaySession(events: BodyEvent[]): SessionState {
     switch (event.type) {
       case "message":
         state.messages.push(event.message);
+        state.messageRecords.push({ seq: event.seq, message: event.message });
         break;
       case "title":
         state.title = event.title;
@@ -204,10 +275,48 @@ function replaySession(events: BodyEvent[]): SessionState {
       case "sandbox/mode":
         state.sandboxMode = event.mode;
         break;
+      case "compaction":
+        state.compaction = {
+          eventSeq: event.seq,
+          summary: event.summary,
+          firstKeptSeq: event.firstKeptSeq,
+          tokensBefore: event.tokensBefore,
+        };
+        break;
     }
   }
 
+  state.contextMessages = deriveContextMessages(state.messageRecords, state.compaction);
+
   return state;
+}
+
+// 把最新压缩状态投影成普通 user checkpoint；模型接口不需要认识 compaction 事件。
+export function deriveContextMessages(
+  records: SessionMessageRecord[],
+  compaction?: CompactionProjection,
+): ChatMessage[] {
+  if (compaction === undefined) {
+    return records.map((record) => record.message);
+  }
+
+  const firstKeptIndex = records.findIndex((record) => record.seq === compaction.firstKeptSeq);
+  if (firstKeptIndex === -1) {
+    throw new Error(`会话文件损坏：compaction 指向不存在的消息 seq ${compaction.firstKeptSeq}`);
+  }
+
+  const checkpoint: ChatMessage = {
+    role: "user",
+    content: [
+      "以下是较早对话的自动压缩检查点。请将其视为已经发生的历史背景，直接继续后续任务，不要复述压缩过程。",
+      "",
+      "<compacted-summary>",
+      compaction.summary,
+      "</compacted-summary>",
+    ].join("\n"),
+  };
+
+  return [checkpoint, ...records.slice(firstKeptIndex).map((record) => record.message)];
 }
 
 // 读取文本并把每行解析成事件。空行跳过。
@@ -263,5 +372,3 @@ function sessionFile(id: string): string {
   }
   return join(SESSIONS_DIR, `${id}.jsonl`);
 }
-
-
