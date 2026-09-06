@@ -1,0 +1,14 @@
+2026-09-06T09:58:12.100+08:00	INFO	OrderController 接收下单请求 orderId=ord_88090 userId=u_3092
+2026-09-06T09:58:12.640+08:00	INFO	OrderService 创建订单成功 orderId=ord_88090 耗时=540ms
+2026-09-06T09:59:30.220+08:00	INFO	OrderController 接收下单请求 orderId=ord_88101 userId=u_3101
+2026-09-06T09:59:30.800+08:00	INFO	OrderService 创建订单成功 orderId=ord_88101 耗时=580ms
+2026-09-06T10:01:57.900+08:00	WARN	RedisPool 连接池使用率 92% pool=checkout-cache active=46/50
+2026-09-06T10:01:58.310+08:00	WARN	RedisPool 获取连接超时(2000ms) pool=checkout-cache active=50/50 等待队列=7
+2026-09-06T10:01:58.312+08:00	ERROR	InventoryClient 调用库存服务失败 timeout after 3000ms traceId=tr_9f2c81
+2026-09-06T10:01:58.315+08:00	ERROR	OrderService 创建订单失败 NullPointerException at OrderService.lambda$createOrder$2(OrderService.java:88) traceId=tr_9f2c81
+2026-09-06T10:01:58.700+08:00	WARN	RedisPool 获取连接超时(2000ms) pool=checkout-cache active=50/50 等待队列=12
+2026-09-06T10:01:59.001+08:00	ERROR	OrderController 下单接口返回 500 orderId=ord_88121 traceId=tr_9f2c81
+2026-09-06T10:01:59.610+08:00	ERROR	InventoryClient 调用库存服务失败 timeout after 3000ms traceId=tr_9f2c82
+2026-09-06T10:02:00.105+08:00	ERROR	OrderController 下单接口返回 500 orderId=ord_88122 traceId=tr_9f2c82
+2026-09-06T10:02:20.000+08:00	INFO	HealthCheck /actuator/health status=UP
+2026-09-06T10:05:00.000+08:00	INFO	RedisPool 连接池使用率 40% pool=checkout-cache active=20/50（疑似自动恢复）

@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node src/main.ts",
     "chat": "node src/repl.ts",
-    "server": "node src/server.ts"
+    "server": "node src/server.ts",
+    "doctor:demo": "node src/ticket-doctor/demo.ts",
+    "test": "node --test src/ticket-doctor/core.test.ts"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
