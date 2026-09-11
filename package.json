@@ -7,7 +7,8 @@
     "doctor:demo": "node src/ticket-doctor/demo.ts",
     "doctor:real": "node src/ticket-doctor/demo-real.ts",
     "doctor:server": "node src/ticket-doctor/server.ts",
-    "test": "node --test src/ticket-doctor/core.test.ts src/ticket-doctor/runtime.test.ts src/ticket-doctor/progress.test.ts src/ticket-doctor/code-sources.test.ts"
+    "doctor:feishu": "node src/ticket-doctor/feishu-bot.ts",
+    "test": "node --test src/ticket-doctor/core.test.ts src/ticket-doctor/runtime.test.ts src/ticket-doctor/progress.test.ts src/ticket-doctor/code-sources.test.ts src/ticket-doctor/feishu-adapter.test.ts"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
@@ -15,6 +16,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.84.2",
-    "@earendil-works/pi-coding-agent": "0.84.2"
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@larksuiteoapi/node-sdk": "^1.73.3"
   }
 }

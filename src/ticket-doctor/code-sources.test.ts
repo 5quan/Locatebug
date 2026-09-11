@@ -61,6 +61,8 @@ test("安全与错误路径：路径穿越/非法 commit/不存在的文件", as
 
   assert.throws(() => new GitCodeSource(REPO, { commit: "main; rm -rf /" }), /非法 commit/);
 
-  const empty = await source.search({ pattern: "这个字符串仓库里不可能存在-zzz" }, ABORT);
+  // 分段拼接，避免“用于证明不存在的完整字符串”出现在被检索的测试源码里。
+  const missingPattern = ["__ticket_doctor_no_match__", "9f4c2a7e"].join("");
+  const empty = await source.search({ pattern: missingPattern }, ABORT);
   assert.deepEqual(empty, [], "无命中返回空数组而不是报错");
 });
