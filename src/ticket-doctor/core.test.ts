@@ -185,6 +185,7 @@ test("不变量校验：非单调 sequence / 终态之后还有事件 都会被�
     timestamp: 1,
     name: "query_logs",
     observation: {
+      kind: "logs",
       intent: { service: "s", timeWindow: { from: 0, to: 1 }, keywords: [] },
       status: "success",
       evidence: [],

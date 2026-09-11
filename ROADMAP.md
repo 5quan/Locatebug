@@ -99,7 +99,7 @@
 
 ## 当前进行
 
-### 工单预检 Agent（ticket-doctor）：阶段 1 完成
+### 工单预检 Agent（ticket-doctor）：阶段 3 完成
 
 测试提 bug 到开发响应之间存在时间空白，而"让 AI 先过一遍"已经是开发拿到工单后的习惯动作。本产品把这一步前置：工单提交时自动触发诊断 Agent，拉取相关服务的错误日志，做初步根因分析，把带证据的预检报告写回工单备注。按 skill（pi-coding-agent）的第一性原理方法开发；Pi Agent SDK 作为诊断引擎端口的真实适配器在阶段 2 接入。
 
@@ -111,12 +111,13 @@
 - [x] 假日志源（`src/ticket-doctor/log-sources.ts` + `samples/`）：按服务名 + 时间窗 + 关键词检索本地样例日志，证据自动附 provenance 与长度截断。
 - [x] 测试：`npm test`（完整路径 / partial / 空转守卫 / 迭代预算 / 回放 / 不变量共 6 组断言）。
 - [x] 演示：`npm run doctor:demo`（complete 与 partial 两条路径）。
+- [x] 阶段 2——Pi SDK 适配器：先写 `ADAPTER-NOTES.md` 映射笔记再实现 `pi-adapter.ts`；真机 deepseek-v4-flash 跑通（事件流过不变量校验、usage 完整、0 条未核实证据）；报告经 `submit_report` 工具提交（TypeBox 强制形状）+ 证据反编造核验；partial 判定硬规则（真机三次验证一致）。
+- [x] 阶段 3——Runtime：`run-log.ts`（.runs/*.jsonl append-only 落库，wx 独占创建 = 原子幂等 claim，可回放）；`runtime.ts`（Runtime 拥有预算、引擎异常/无终态补 run_failed 留痕）；`server.ts`（POST /api/tickets 模拟云效触发，GET runs/events/comment 审计面）。测试 11/11 通过，fake 引擎 curl 冒烟全链路通过。
+- [x] 阶段 4a——读代码与进度投影：契约（CodeSource 端口，版本钉死在构造上）→ `code-sources.ts`（git grep/show 实现，无 shell、限长、路径校验）→ 适配器接线（search_code/read_code 工具、QueryObservation 判别联合、证据池统一核验、代码工具独立预算 budget_tools）；`progress.ts` 进度投影（进度 = f(事件)，不新增状态源）+ GET /api/runs/:id/progress；真机验证模型主动用 search_code 定位堆栈类名、预算透明化治理（预算写进提示词，避免被硬刹车掐死）。测试 20/20 通过。
 
 后续阶段（对应 skill 的 Development sequence）：
 
-- [ ] 阶段 2：先写适配器映射笔记，再用 Pi Agent SDK 实现 DiagnosisEngine（`createAgentSession` + `defineTool` + 事件归一化），fake 与 real 用同一套事件语义对比。
-- [ ] 阶段 3：Runtime——Run 生命周期、RunLog（JSONL）落库、超时与取消、ticketId 幂等。
-- [ ] 阶段 4：真实集成——HTTP 模拟云效工单触发、真实日志源适配器、工单备注写回。
+- [ ] 阶段 4b：真实集成——云效 webhook payload → TicketTask 适配器（含 commit 提取）、真实日志源适配器、诊断备注写回云效（或钉钉通知）。
 - [ ] 阶段 5：golden runs 回归语料与产品验收（skill 退出清单逐条对应测试）。
 
 ### 多 Agent：设计完成，实现未开始

@@ -13,6 +13,7 @@ export interface TicketTask {
   description: string;
   service?: string; // 所属服务，决定日志检索范围
   occurredAt?: number; // 发生时间（epoch ms），决定日志时间窗
+  commit?: string; // 提测提供的代码版本（commit 哈希/可解析引用）：决定 CodeSource 钉在哪个版本；缺省不给代码工具
 }
 
 // ---------- 证据：每条证据必须自带"来源"，否则报告无法审计 ----------
@@ -20,10 +21,10 @@ export interface TicketTask {
 // 所以证据的 provenance 是字段，不是附件。
 
 export interface Evidence {
-  source: string; // 从哪个日志源、用什么查询条件拿到
-  time: number; // 日志条目时间（epoch ms）
-  level?: string; // 日志级别（ERROR / WARN / INFO ...）
-  excerpt: string; // 截断后的日志片段（工具结果按不可信输入处理，必须限长）
+  source: string; // 从哪个日志/代码源、用什么查询条件拿到（unverified 前缀 = 模型引用未命中，见反编造核验）
+  time?: number; // 日志条目时间（epoch ms）；代码证据没有时间，缺省
+  level?: string; // 日志级别（ERROR / WARN / INFO ...）；代码证据缺省
+  excerpt: string; // 截断后的原文片段（工具结果按不可信输入处理，必须限长）
 }
 
 // ---------- 输出：结构化诊断报告 ----------
@@ -62,19 +63,65 @@ export interface LogSource {
   query(intent: LogQueryIntent, signal: AbortSignal): Promise<LogEntry[]>;
 }
 
+// ---------- 代码源端口（"看代码排错"定位能力的第二材料源） ----------
+// 与 LogSource 同构：模型通过 search_code / read_code 两个工具提出意图，CodeSource 机械执行。
+// 只读约束落在适配器实现里（路径白名单、限长），Core 只约定数据形状。
+
+export interface CodeSearchIntent {
+  pattern: string; // 大小写敏感的子串匹配（类名 / 方法名 / 异常信息片段）
+  glob?: string; // 相对路径子串过滤（如 ".java"），不是通配符
+}
+
+export interface CodeReadIntent {
+  path: string; // 相对代码根目录的路径
+  startLine?: number; // 1-based，默认 1
+  endLine?: number; // 含端点；缺省受单次读取上限约束
+}
+
+export interface CodeSnippet {
+  path: string; // 相对路径（posix 分隔符），模型引用代码时填 location 的依据
+  line: number; // 1-based 行号
+  text: string;
+}
+
+export interface CodeSource {
+  readonly name: string;
+  search(intent: CodeSearchIntent, signal: AbortSignal): Promise<CodeSnippet[]>;
+  read(intent: CodeReadIntent, signal: AbortSignal): Promise<CodeSnippet[]>;
+}
+
 // ---------- 决策（对应 skill 的 Decision；本产品 v1 没有 ask_human） ----------
 
 export type Decision =
   | { kind: "call_tool"; name: "query_logs"; arguments: LogQueryIntent }
+  | { kind: "call_tool"; name: "search_code"; arguments: CodeSearchIntent }
+  | { kind: "call_tool"; name: "read_code"; arguments: CodeReadIntent }
   | { kind: "respond"; report: DiagnosisReport };
 
-// 一次日志查询留下的观察记录（observation_added 事件的 payload）
-export interface LogQueryObservation {
-  intent: LogQueryIntent;
-  status: "success" | "error";
-  evidence: Evidence[];
-  error?: string; // status=error 时的失败原因
-}
+// 一次查询留下的观察记录（observation_added 事件的 payload）。
+// kind 是判别字段：logs = 日志查询，code_search / code_read = 代码查询（"看代码排错"延伸）。
+export type QueryObservation =
+  | {
+      kind: "logs";
+      intent: LogQueryIntent;
+      status: "success" | "error";
+      evidence: Evidence[];
+      error?: string;
+    }
+  | {
+      kind: "code_search";
+      intent: CodeSearchIntent;
+      status: "success" | "error";
+      evidence: Evidence[];
+      error?: string;
+    }
+  | {
+      kind: "code_read";
+      intent: CodeReadIntent;
+      status: "success" | "error";
+      evidence: Evidence[];
+      error?: string;
+    };
 
 // ---------- 产品级事件（skill 的 AgentEvent 裁剪到本产品需要的子集） ----------
 // 裁剪原则：每个类型都必须能连到本产品的任务/决策/证据/终态，否则不进（防过早抽象）。
@@ -121,7 +168,7 @@ export type AgentEvent =
       runId: string;
       sequence: number;
       name: string;
-      observation: LogQueryObservation;
+      observation: QueryObservation;
       timestamp: number;
     }
   | {

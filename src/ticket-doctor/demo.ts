@@ -8,37 +8,12 @@
 
 import { fileURLToPath } from "node:url";
 import type { AgentEvent, LogSource, TicketTask } from "./contracts.ts";
-import { extractReport, renderTicketComment } from "./core.ts";
+import { describeEvent, extractReport, renderTicketComment } from "./core.ts";
 import { FakeDiagnosisEngine } from "./fake-engine.ts";
 import { FileLogSource } from "./log-sources.ts";
 
 const T0 = Date.parse("2026-09-06T10:02:00+08:00");
 const SAMPLES_DIR = fileURLToPath(new URL("../../samples/", import.meta.url));
-
-function describeEvent(event: AgentEvent): string {
-  switch (event.type) {
-    case "run_started":
-      return `[${event.sequence}] run_started runId=${event.runId}`;
-    case "decision_made":
-      return event.decision.kind === "call_tool"
-        ? `[${event.sequence}] decision_made call_tool ${event.decision.name} ${JSON.stringify(event.decision.arguments)}`
-        : `[${event.sequence}] decision_made respond（产出诊断报告）`;
-    case "tool_started":
-      return `[${event.sequence}] tool_started ${event.toolName}`;
-    case "tool_completed":
-      return `[${event.sequence}] tool_completed ${event.toolName} ${event.status} (${event.durationMs}ms)`;
-    case "observation_added":
-      return `[${event.sequence}] observation_added ${event.name} status=${event.observation.status} 证据=${event.observation.evidence.length}条`;
-    case "usage_reported":
-      return `[${event.sequence}] usage_reported ${JSON.stringify(event.usage)}`;
-    case "run_completed":
-      return `[${event.sequence}] run_completed status=${event.status}`;
-    case "run_failed":
-      return `[${event.sequence}] run_failed ${event.error.code}: ${event.error.message}`;
-    case "run_cancelled":
-      return `[${event.sequence}] run_cancelled`;
-  }
-}
 
 async function runScenario(name: string, task: TicketTask, logSource: LogSource): Promise<void> {
   console.log(`\n========== 场景：${name} ==========`);

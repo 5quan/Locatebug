@@ -4,14 +4,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node src/main.ts",
-    "chat": "node src/repl.ts",
-    "server": "node src/server.ts",
     "doctor:demo": "node src/ticket-doctor/demo.ts",
-    "test": "node --test src/ticket-doctor/core.test.ts"
+    "doctor:real": "node src/ticket-doctor/demo-real.ts",
+    "doctor:server": "node src/ticket-doctor/server.ts",
+    "test": "node --test src/ticket-doctor/core.test.ts src/ticket-doctor/runtime.test.ts src/ticket-doctor/progress.test.ts src/ticket-doctor/code-sources.test.ts"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.84.2",
+    "@earendil-works/pi-coding-agent": "0.84.2"
   }
 }

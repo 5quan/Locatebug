@@ -5,20 +5,25 @@
 import type {
   AgentEvent,
   DiagnosisReport,
-  LogQueryObservation,
+  QueryObservation,
   TicketTask,
 } from "./contracts.ts";
 
 // 一次诊断运行的领域状态（对应 skill 的 AgentState，裁剪到本产品需要的字段）
 export interface AgentState {
   task: TicketTask;
-  observations: LogQueryObservation[];
+  observations: QueryObservation[];
   iterations: number; // 完成的迭代数（每个 observation_added 记一次）
 }
 
 // ---------- 回放：事件日志是唯一事实源，状态从事件推导（skill「Storage contracts」） ----------
 
 const TERMINAL_TYPES = new Set(["run_completed", "run_failed", "run_cancelled"]);
+
+// 终态判定：Runtime 的"无终态守卫"和 RunLog 的 listRuns 都要用
+export function isTerminalEvent(event: AgentEvent): boolean {
+  return TERMINAL_TYPES.has(event.type);
+}
 
 export function replayAgentState(
   events: AgentEvent[],
@@ -103,7 +108,8 @@ export function renderTicketComment(task: TicketTask, report: DiagnosisReport): 
     report.hypotheses.forEach((h, i) => {
       lines.push(`${i + 1}. [置信度：${CONFIDENCE_LABEL[h.confidence]}] ${h.cause}`);
       for (const ev of h.evidence) {
-        lines.push(`   - 证据：${formatTime(ev.time)}${ev.level ? ` [${ev.level}]` : ""} ${ev.excerpt}`);
+        const time = ev.time ? formatTime(ev.time) : "";
+        lines.push(`   - 证据：${time}${time ? " " : ""}${ev.level ? `[${ev.level}]` : ""} ${ev.excerpt}`.trimEnd());
         lines.push(`     来源：${ev.source}`);
       }
     });
@@ -125,4 +131,31 @@ export function renderTicketComment(task: TicketTask, report: DiagnosisReport): 
     }
   }
   return lines.join("\n");
+}
+
+// ---------- 事件 → 一行人话（demo / 调试共用；纯函数） ----------
+
+export function describeEvent(event: AgentEvent): string {
+  switch (event.type) {
+    case "run_started":
+      return `[${event.sequence}] run_started runId=${event.runId}`;
+    case "decision_made":
+      return event.decision.kind === "call_tool"
+        ? `[${event.sequence}] decision_made call_tool ${event.decision.name} ${JSON.stringify(event.decision.arguments)}`
+        : `[${event.sequence}] decision_made respond（产出诊断报告）`;
+    case "tool_started":
+      return `[${event.sequence}] tool_started ${event.toolName}`;
+    case "tool_completed":
+      return `[${event.sequence}] tool_completed ${event.toolName} ${event.status} (${event.durationMs}ms)`;
+    case "observation_added":
+      return `[${event.sequence}] observation_added ${event.name} status=${event.observation.status} 证据=${event.observation.evidence.length}条`;
+    case "usage_reported":
+      return `[${event.sequence}] usage_reported ${JSON.stringify(event.usage)}`;
+    case "run_completed":
+      return `[${event.sequence}] run_completed status=${event.status}`;
+    case "run_failed":
+      return `[${event.sequence}] run_failed ${event.error.code}: ${event.error.message}`;
+    case "run_cancelled":
+      return `[${event.sequence}] run_cancelled`;
+  }
 }

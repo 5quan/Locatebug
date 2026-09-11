@@ -15,10 +15,11 @@ import type {
   Decision,
   Evidence,
   LogQueryIntent,
-  LogQueryObservation,
+  QueryObservation,
   LogSource,
   TicketTask,
 } from "./contracts.ts";
+import { MAX_EXCERPT_CHARS } from "./limits.ts";
 
 // 假"模型"每次迭代看到的状态与它要做的决策。
 // 真实模型接入后，这个角色由 Pi SDK 的 session.prompt + 事件归一化承担。
@@ -26,7 +27,7 @@ export type FakeModelScript = (state: FakeLoopState) => Decision;
 
 export interface FakeLoopState {
   task: TicketTask;
-  observations: LogQueryObservation[];
+  observations: QueryObservation[];
   iteration: number; // 从 1 开始
 }
 
@@ -124,7 +125,7 @@ export class FakeDiagnosisEngine {
     const runId = this.opts.runId ?? `run_${task.ticketId}`;
     const script = this.opts.script ?? defaultScript;
     const maxIterations = this.opts.maxIterations ?? 3;
-    const maxExcerptChars = this.opts.maxExcerptChars ?? 200;
+    const maxExcerptChars = this.opts.maxExcerptChars ?? MAX_EXCERPT_CHARS;
     const logSource = this.opts.logSource;
 
     let seq = 0;
@@ -139,7 +140,7 @@ export class FakeDiagnosisEngine {
 
     yield { type: "run_started", runId, sequence: ++seq, timestamp: now() };
 
-    const observations: LogQueryObservation[] = [];
+    const observations: QueryObservation[] = [];
     let prevProgressKey: string | null = null;
 
     for (let iteration = 1; iteration <= maxIterations; iteration++) {
@@ -168,6 +169,26 @@ export class FakeDiagnosisEngine {
         return;
       }
 
+      if (decision.kind !== "call_tool" || decision.name !== "query_logs") {
+        // 假引擎只实现了日志查询；脚本不会返回代码工具，这里是类型收窄 + 诚实兜底
+        yield { type: "usage_reported", runId, sequence: ++seq, timestamp: now(), usage: usage() };
+        yield {
+          type: "run_failed",
+          runId,
+          sequence: ++seq,
+          timestamp: now(),
+          error: {
+            code: "runtime_error",
+            message:
+              decision.kind === "call_tool"
+                ? `假引擎不支持工具 ${decision.name}`
+                : "假引擎产出未知决策",
+          },
+        };
+        return;
+      }
+      const intent = decision.arguments;
+
       // ---- call_tool：执行日志查询，把结果转成带 provenance 的证据 ----
       const toolCallId = `tc_${runId}_${iteration}`;
       const toolStartedAt = now();
@@ -180,10 +201,10 @@ export class FakeDiagnosisEngine {
         toolName: decision.name,
       };
 
-      let observation: LogQueryObservation;
+      let observation: QueryObservation;
       try {
-        const entries = await logSource.query(decision.arguments, signal);
-        const provenance = `${logSource.name} | keywords=[${decision.arguments.keywords.join(",")}] | window=[${new Date(decision.arguments.timeWindow.from).toISOString()} ~ ${new Date(decision.arguments.timeWindow.to).toISOString()}]`;
+        const entries = await logSource.query(intent, signal);
+        const provenance = `${logSource.name} | keywords=[${intent.keywords.join(",")}] | window=[${new Date(intent.timeWindow.from).toISOString()} ~ ${new Date(intent.timeWindow.to).toISOString()}]`;
         const evidence: Evidence[] = entries.map((e) => ({
           source: provenance,
           time: e.time,
@@ -193,7 +214,7 @@ export class FakeDiagnosisEngine {
               ? e.message.slice(0, maxExcerptChars) + "…"
               : e.message,
         }));
-        observation = { intent: decision.arguments, status: "success", evidence };
+        observation = { kind: "logs", intent, status: "success", evidence };
         yield {
           type: "tool_completed",
           runId,
@@ -207,7 +228,7 @@ export class FakeDiagnosisEngine {
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        observation = { intent: decision.arguments, status: "error", evidence: [], error: message };
+        observation = { kind: "logs", intent, status: "error", evidence: [], error: message };
         yield {
           type: "tool_completed",
           runId,
