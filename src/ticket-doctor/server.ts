@@ -37,6 +37,8 @@ import { SkillRegistry } from "./skill-registry.ts";
 import { TicketDoctorRuntime } from "./runtime.ts";
 
 const PORT = Number(process.env.PORT ?? 7777);
+// 默认只绑本机（无鉴权面不外暴）；容器/反向代理部署时用 HOST=0.0.0.0
+const HOST = process.env.HOST ?? "127.0.0.1";
 const PROJECT_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const RUNS_DIR = join(PROJECT_ROOT, ".runs");
 const SAMPLES_DIR = fileURLToPath(new URL("../../samples/", import.meta.url));
@@ -266,9 +268,9 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, "127.0.0.1", () => {
+server.listen(PORT, HOST, () => {
   console.log(
-    `ticket-doctor server listening on http://127.0.0.1:${PORT} ` +
+    `ticket-doctor server listening on http://${HOST}:${PORT} ` +
       `(engine=${process.env.DOCTOR_ENGINE === "fake" ? "fake" : "pi/deepseek-v4-flash"}, runs=${RUNS_DIR})`,
   );
 });

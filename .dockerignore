@@ -1,0 +1,6 @@
+# 只从构建上下文排除本地产物与凭证；镜像内进什么由 Dockerfile 的 COPY 显式决定
+.git
+.env
+.runs
+.sessions
+node_modules

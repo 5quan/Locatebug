@@ -1,0 +1,51 @@
+# ticket-doctor 单机容器化部署
+#
+# 快速开始：
+#   1) cp .env.example .env 并填写凭证（fake 引擎可先不填 DEEPSEEK_API_KEY；
+#      飞书机器人服务必须填 FEISHU_APP_ID / FEISHU_APP_SECRET）
+#   2) docker compose build
+#   3) docker compose up -d doctor-api    # 只起 HTTP 接入面
+#      docker compose up -d               # API + 飞书机器人一起跑
+#
+# 说明：
+#   - 两个服务共享 runs 卷（运行记录 + 幂等 claim）。claim 是本地卷上的原子文件创建，
+#     同一张工单即使两个服务同时受理也只会执行一次。
+#   - 仓库镜像/日志目录按需取消 bind mount 注释，并在 .env 里配 DOCTOR_REPOS。
+#   - 升级 = docker compose build && docker compose up -d；.runs 在卷里不受影响。
+
+services:
+  doctor-api:
+    build: .
+    image: locatebug/doctor:latest
+    command: ["node", "src/ticket-doctor/server.ts"]
+    environment:
+      HOST: 0.0.0.0 # 容器内必须监听非回环地址，端口映射才可达
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:7777:7777" # 只映射到宿主机本机；对外请加带鉴权的反向代理
+    volumes:
+      - runs:/app/.runs
+      # - /srv/mirrors:/srv/mirrors:ro   # 业务仓库 bare 镜像（git fetch 由宿主机 crontab 维护）
+      # - ./skills:/app/skills           # 不重建镜像就能更新 Skill 时改用 bind mount
+      # - /srv/logs:/app/samples         # FileLogSource 的日志文件目录（<服务名>.log）
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||7777)+'/api/runs').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  doctor-bot:
+    image: locatebug/doctor:latest
+    build: .
+    command: ["node", "src/ticket-doctor/feishu-bot.ts"]
+    env_file:
+      - .env
+    volumes:
+      - runs:/app/.runs
+      # - /srv/mirrors:/srv/mirrors:ro
+    restart: unless-stopped
+
+volumes:
+  runs:

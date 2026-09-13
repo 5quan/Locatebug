@@ -26,4 +26,4 @@ npm run doctor:server      # 本地 HTTP 服务(:7777),POST /api/tickets 提交�
 
 ---
 
-阶段进度与设计推导:[ONBOARDING.md](./ONBOARDING.md) · [FLOW-DESIGN.md](./FLOW-DESIGN.md) · [ARCH-REVIEW.md](./ARCH-REVIEW.md) · [ROADMAP.md](./ROADMAP.md)
+阶段进度与设计推导:[ONBOARDING.md](./ONBOARDING.md) · [FLOW-DESIGN.md](./FLOW-DESIGN.md) · [ARCH-REVIEW.md](./ARCH-REVIEW.md) · [ROADMAP.md](./ROADMAP.md) · 部署:[DEPLOY.md](./DEPLOY.md)
