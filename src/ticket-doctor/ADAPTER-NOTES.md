@@ -124,3 +124,25 @@
 - **Skill 注入**：`RunContext.skill`（SkillRegistry 在运行开始选定，含 sha256 内容哈希）→
   `skill_selected` 事件 + 追加进 system prompt；不走 SDK 文件发现（`getSkills` 保持空）。
 - **终态优先级**不变（§3.6）；浏览器超限并入 `budget_tools`。
+
+## 9. 独立审计与定向回流（2026-09-14）
+
+- **职责切分**：`report-validator.ts`（确定性）管"引用正确"（ID 存在/运行归属/版本一致）；
+  审计 Agent 管"复现有效性与归因充分性"（证据是否真支撑结论需要语义判断）。两者先后作用于
+  同一份报告，互不替代。
+- **独立性的结构性保障**（`pi-auditor.ts`）：独立会话 + 独立对抗提示词（默认假设报告有问题、
+  逐项 pass/fail、找不到问题必须明说"未发现问题"）；输入包只有工单/报告/工具轨迹摘要/证据清单
+  ——生成者的中间推理本来就不进产品事件流，结构上杜绝自我说服；`submit_audit` 经 TypeBox 强制
+  三档结论（pass/degrade/reject）+ 结构化问题（dimension/description/evidenceRef/hypothesisIndex/
+  reflowTarget）。
+- **回流编排**（`audited-engine.ts`，本身是 DiagnosisEngine，Runtime 无感知）：对内层事件重编
+  sequence 保证跨尝试单调；被打回尝试的 run_completed 不外发但全部轨迹事件留痕；
+  reject 时按 issue 的 reflowTarget 定向回流，失败历史 + 已核实结论清单经 `RunContext.auditFeedback`
+  注入下一轮（去重反馈：同样的错误不再用同样方式犯）。四道闸门：maxReflows（默认 2）、
+  同维度连续两次失败熔断升级、可选 maxTotalTokens、Runtime 既有超时兜底。超出预算走
+  `applyAuditConclusion`（降级映射）+ `mergePreserved`（保留更早尝试的 verified/supported 结论），
+  status 兜底 partial，全程 corrections 留痕。
+- **共享证据池**：`RunContext.evidenceStore` 由编排引擎创建并跨尝试注入，补证进入同一池，
+  证据 ID 全局唯一——降级后"已核实结论"的证据引用依然可解析、可追溯。
+- **审计自身失败**：不阻断交付，报告附 corrections"未经独立审计"，与"审计通过"严格区分。
+- **验证**：`reflow.test.ts`（脚本化生成器 × 脚本化/确定性审计，9 场景）；pi-auditor 真机验收待环境。

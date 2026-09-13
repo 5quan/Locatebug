@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 import { GitCodeSource, resolveRepoSha } from "../src/ticket-doctor/code-sources.ts";
 import { extractReport, renderTicketComment } from "../src/ticket-doctor/core.ts";
 import { FakeDiagnosisEngine } from "../src/ticket-doctor/fake-engine.ts";
+import { AuditedDiagnosisEngine } from "../src/ticket-doctor/audited-engine.ts";
+import { FakeDiagnosisAuditor } from "../src/ticket-doctor/fake-auditor.ts";
 import { FileLogSource } from "../src/ticket-doctor/log-sources.ts";
 import { JsonlRunLog } from "../src/ticket-doctor/run-log.ts";
 import { SkillRegistry } from "../src/ticket-doctor/skill-registry.ts";
@@ -98,5 +100,27 @@ try {
   assert.ok(String(e.message).includes("无法解析代码版本"));
 }
 console.log("[5] 坏 commit fail fast（不烧模型调用）：通过");
+
+// 6) 独立审计 + 定向回流：审计过的引擎经 Runtime 落库，新事件（audit_completed 等）完整持久化
+const auditedRuntime = new TicketDoctorRuntime({
+  engine: new AuditedDiagnosisEngine({
+    generator: new FakeDiagnosisEngine({ logSource: new FileLogSource(SAMPLES) }),
+    auditor: new FakeDiagnosisAuditor(), // 确定性默认审计
+  }),
+  runLog: new JsonlRunLog(dir),
+  prepareContext,
+});
+const audited = await auditedRuntime.submit({ ...task, ticketId: "BUG-SMOKE-AUDIT" });
+assert.equal(audited.accepted, true);
+await auditedRuntime.waitUntilDone(audited.runId);
+const auditEvents = await auditedRuntime.getEvents(audited.runId);
+const auditDone = auditEvents.find((e) => e.type === "audit_completed");
+assert.ok(auditDone, "事件流应包含 audit_completed");
+assert.equal(auditDone.attempt, 1);
+const auditedReport = extractReport(auditEvents);
+assert.ok(auditedReport?.audit?.verdict === "pass", "确定性审计应放行诚实的 candidate 报告");
+const auditedComment = renderTicketComment({ ...task, ticketId: "BUG-SMOKE-AUDIT" }, auditedReport);
+assert.ok(auditedComment.includes("独立审计：通过"), "备注渲染审计结论");
+console.log("[6] 独立审计 + Runtime 落库（audit_completed 事件、报告审计落档、备注渲染）：通过");
 
 console.log("\n冒烟全部通过。");

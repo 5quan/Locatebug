@@ -14,6 +14,8 @@
 //       业务仓库映射（repoId → 目录）。工单的 commit / repositories 按它解析成完整 SHA。
 //   DOCTOR_SKILLS_DIR / DOCTOR_SKILL_ID
 //       Skill 目录与显式指定；缺省读项目 skills/ 目录。
+//   DOCTOR_AUDIT=on|off|fake
+//       独立审计与定向回流（默认 on：真实引擎配模型审计，fake 引擎配确定性审计）。
 //
 // 注意：无鉴权、只绑定本地——这是阶段 3 的开发接入面；鉴权与真实云效对接在阶段 4。
 
@@ -29,9 +31,8 @@ import {
 import { projectProgress } from "./progress.ts";
 import type { RepoBinding, RunContext, TicketTask } from "./contracts.ts";
 import { GitCodeSource, MultiRepoCodeSource, resolveRepoSha } from "./code-sources.ts";
-import { FakeDiagnosisEngine } from "./fake-engine.ts";
+import { auditModeFromEnv, createEngineStack } from "./engine-factory.ts";
 import { FileLogSource } from "./log-sources.ts";
-import { PiDiagnosisEngine } from "./pi-adapter.ts";
 import { JsonlRunLog } from "./run-log.ts";
 import { SkillRegistry } from "./skill-registry.ts";
 import { TicketDoctorRuntime } from "./runtime.ts";
@@ -104,30 +105,28 @@ async function prepareContext(task: TicketTask): Promise<Partial<RunContext>> {
   };
 }
 
-const engine =
-  process.env.DOCTOR_ENGINE === "fake"
-    ? new FakeDiagnosisEngine({ logSource })
-    : new PiDiagnosisEngine({
-        logSource,
-        // 运行上下文里已有解析好的完整 SHA，这里按仓构造只读代码源（版本在 prepareContext 钉死）
-        codeSource: async (_task, context) => {
-          if (!context.repos || context.repos.length === 0) return undefined;
-          const sources = [];
-          for (const binding of context.repos) {
-            const dir = repoConfig[binding.repoId];
-            if (!dir) continue;
-            sources.push(
-              await GitCodeSource.create(dir, { commit: binding.sha, repoId: binding.repoId }),
-            );
-          }
-          if (sources.length === 0) return undefined;
-          if (sources.length === 1) return sources[0];
-          return new MultiRepoCodeSource(sources);
-        },
-        provider: "deepseek",
-        modelId: "deepseek-v4-flash",
-        apiKey: process.env.DEEPSEEK_API_KEY,
-      });
+const engine = createEngineStack({
+  kind: process.env.DOCTOR_ENGINE === "fake" ? "fake" : "pi",
+  logSource,
+  auditMode: auditModeFromEnv(process.env.DOCTOR_AUDIT),
+  codeSource: async (_task, context) => {
+    if (!context.repos || context.repos.length === 0) return undefined;
+    const sources = [];
+    for (const binding of context.repos) {
+      const dir = repoConfig[binding.repoId];
+      if (!dir) continue;
+      sources.push(
+        await GitCodeSource.create(dir, { commit: binding.sha, repoId: binding.repoId }),
+      );
+    }
+    if (sources.length === 0) return undefined;
+    if (sources.length === 1) return sources[0];
+    return new MultiRepoCodeSource(sources);
+  },
+  provider: "deepseek",
+  modelId: "deepseek-v4-flash",
+  apiKey: process.env.DEEPSEEK_API_KEY,
+});
 const runtime = new TicketDoctorRuntime({
   engine,
   runLog: new JsonlRunLog(RUNS_DIR),

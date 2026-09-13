@@ -29,7 +29,8 @@ export type FakeModelScript = (state: FakeLoopState) => Decision;
 export interface FakeLoopState {
   task: TicketTask;
   observations: QueryObservation[];
-  iteration: number; // 从 1 开始
+  iteration: number; // 从 1 开始（同一次生成尝试内的轮次）
+  context: RunContext; // 含 auditFeedback（回流反馈）等；脚本可据此分支
 }
 
 export interface FakeDiagnosisOptions {
@@ -164,7 +165,7 @@ export class FakeDiagnosisEngine {
         return;
       }
 
-      const decision = script({ task, observations, iteration });
+      const decision = script({ task, observations, iteration, context });
       yield { type: "decision_made", runId, sequence: ++seq, timestamp: now(), decision };
 
       if (decision.kind === "respond") {
@@ -218,16 +219,35 @@ export class FakeDiagnosisEngine {
       let observation: QueryObservation;
       try {
         const entries = await logSource.query(intent, signal);
-        const provenance = `${logSource.name} | keywords=[${intent.keywords.join(",")}] | window=[${new Date(intent.timeWindow.from).toISOString()} ~ ${new Date(intent.timeWindow.to).toISOString()}]`;
-        const evidence: Evidence[] = entries.map((e) => ({
-          source: provenance,
-          time: e.time,
-          level: e.level,
-          excerpt:
-            e.message.length > maxExcerptChars
-              ? e.message.slice(0, maxExcerptChars) + "…"
-              : e.message,
-        }));
+        // 工单没有 occurredAt 时窗口右端是 MAX_SAFE_INTEGER，超出 Date 表示范围，格式化需防御
+        const fmt = (ms: number) =>
+          Number.isFinite(ms) && Math.abs(ms) <= 8.64e15 ? new Date(ms).toISOString() : String(ms);
+        const provenance = `${logSource.name} | keywords=[${intent.keywords.join(",")}] | window=[${fmt(intent.timeWindow.from)} ~ ${fmt(intent.timeWindow.to)}]`;
+        const evidence: Evidence[] = entries.map((e) => {
+          const base = {
+            source: provenance,
+            time: e.time,
+            level: e.level,
+            excerpt:
+              e.message.length > maxExcerptChars
+                ? e.message.slice(0, maxExcerptChars) + "…"
+                : e.message,
+          };
+          // 审计回流场景：外层引擎注入共享证据池，登记后证据带全局唯一 ID
+          const store = context.evidenceStore;
+          if (store) {
+            const stored = store.register({
+              kind: "log",
+              toolCallId,
+              excerpt: base.excerpt,
+              source: provenance,
+              time: e.time,
+              level: e.level,
+            });
+            return { ...base, evidenceId: stored.evidenceId };
+          }
+          return base;
+        });
         observation = { kind: "logs", intent, status: "success", evidence };
         yield {
           type: "tool_completed",

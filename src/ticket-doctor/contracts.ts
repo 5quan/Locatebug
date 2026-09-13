@@ -5,6 +5,8 @@
 // 循环由谁驱动（假引擎 / Pi SDK 适配器）、日志从哪来（本地样例 / 真实日志平台）、
 // 浏览器怎么开（Playwright / 假驱动），都属于适配器，通过下面的端口接进来。
 
+import type { EvidenceStore } from "./evidence-store.ts";
+
 // ---------- 输入：一张 bug 工单（对应 skill 的 Task） ----------
 
 // 工单可携带的业务仓库引用（前后端分仓时逐仓给版本）
@@ -52,6 +54,9 @@ export interface RunContext {
   repos?: RepoBinding[]; // 本次运行钉死的源码版本（前后端分仓时多份）
   environmentId?: string;
   skill?: SkillBinding; // 本次运行固定的 Skill 版本
+  // —— 诊断审计与定向回流：由 AuditedDiagnosisEngine 注入 ——
+  evidenceStore?: EvidenceStore; // 跨回流尝试共享的证据池（证据 ID 全局唯一）
+  auditFeedback?: string[]; // 上轮独立审计的失败摘要，注入下一轮生成（去重反馈，避免重试重复犯错）
 }
 
 // ---------- 证据：每条证据必须自带"来源"，否则报告无法审计 ----------
@@ -108,6 +113,48 @@ export interface DiagnosisReport {
   missingMaterial?: string[]; // partial 时：还缺什么材料
   reproductionStatus?: ReproductionStatus; // 异常是否已复现（独立于根因验证）
   corrections?: string[]; // 报告校验时系统施加的强制修正（审计用：模型说了不算的部分）
+  audit?: AuditConclusion; // 独立审计结论（PASS/DEGRADE/REJECT 的落档，随报告一起回写工单）
+}
+
+// ---------- 独立审计（诊断审计与定向回流） ----------
+// 第一原则：审计 Agent 不执行原任务，只挑战结果。价值在于"不同的目标函数、不同的上下文、
+// 不同的工具权限"——一旦它开始替生成者干活，就失去了独立性。
+
+// 审计维度（定稿范围）：复现有效性 + 归因充分性。引用正确性/版本一致性由 report-validator
+// 的确定性检查负责，不属于审计 Agent 的职责。
+export type AuditDimension = "reproduction_validity" | "attribution_sufficiency";
+export type AuditVerdict = "pass" | "degrade" | "reject";
+
+// 程序可执行的回流方向（按问题类型定向，不盲目重试）
+export type ReflowTarget = "supplement_evidence" | "revise_hypothesis" | "downgrade_report";
+
+export interface AuditIssue {
+  dimension: AuditDimension;
+  description: string;
+  evidenceRef?: string; // 证据 ID 或轨迹引用，供人工核对
+  hypothesisIndex?: number; // 指向报告中假设的下标（程序据此定向降级）
+  reflowTarget: ReflowTarget; // 审计建议的回流方向；程序校验后执行
+}
+
+export interface AuditConclusion {
+  verdict: AuditVerdict;
+  issues: AuditIssue[];
+  summary?: string;
+}
+
+// 审计输入包（刻意裁剪）：原始工单 + 待审报告 + 工具轨迹摘要 + 全部证据。
+// 不含生成者的完整中间推理——让审计基于结果倒推合理性，而不是沿着生成者的思路走一遍。
+export interface AuditInput {
+  task: TicketTask;
+  report: DiagnosisReport;
+  observations: QueryObservation[]; // 工具轨迹（观察级摘要，含失败留痕）
+  evidence: Evidence[]; // 本次运行全部证据（含未被引用的）
+  skill?: SkillBinding;
+}
+
+// 审计 Agent 端口（形态二：独立 Auditor）。实现：fake-auditor.ts（确定性）/ pi-auditor.ts（SDK）。
+export interface DiagnosisAuditor {
+  audit(input: AuditInput, signal: AbortSignal): Promise<AuditConclusion>;
 }
 
 // ---------- 日志端口 ----------
@@ -342,6 +389,23 @@ export type AgentEvent =
         durationMs: number;
         model?: string;
       };
+      timestamp: number;
+    }
+  | {
+      type: "audit_completed";
+      runId: string;
+      sequence: number;
+      attempt: number; // 第几次生成尝试的审计（1 起）
+      conclusion: AuditConclusion;
+      timestamp: number;
+    }
+  | {
+      type: "reflow_triggered";
+      runId: string;
+      sequence: number;
+      attempt: number; // 被打回的尝试
+      targets: ReflowTarget[]; // 程序按审计问题类型定向选择的回流方向
+      reasons: string[]; // 人话原因（进事件流供审计）
       timestamp: number;
     }
   | {

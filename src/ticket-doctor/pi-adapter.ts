@@ -62,7 +62,10 @@ const DEFAULT_SYSTEM_PROMPT = `你是 bug 工单的预检诊断员，产出供�
 5. 定位状态分级：verified（根因已验证，需要有效证据 + 复现确认）、supported（有证据支持）、
    candidate（候选原因）。证据不足时降级为 candidate，并把"还缺什么"写进 pendingChecks。
 6. 绝不编造；置信度必须反映证据的强度，而不是你行文的确定语气。
-7. 报告必须通过 submit_report 工具提交，不要用普通文本回复代替提交。`;
+7. 报告必须通过 submit_report 工具提交，不要用普通文本回复代替提交。
+8. 报告会经过独立审计 Agent 的对抗式检查（复现有效性、归因充分性）。若工单上下文给出
+   "上一轮审计反馈"，必须针对性解决：补证据用真实工具查询完成，禁止编造；被反馈点名的
+   过度归因要降级表述并写 pendingChecks；已核实的结论保留，除非拿到新的反证。`;
 
 // 工单带代码版本时追加的代码工具规则（版本已在运行开始时解析成完整 SHA 并钉死）
 const CODE_TOOL_RULES = `
@@ -220,8 +223,8 @@ function codeTargetOf(codeSource: CodeSource, repoId?: string): CodeSource {
   }
   return codeSource;
 }
-// 把工单渲染成给模型看的第一条 user 消息
-function renderTicketContext(task: TicketTask): string {
+// 把工单渲染成给模型看的第一条 user 消息；auditFeedback 是上轮独立审计的定向回流反馈
+function renderTicketContext(task: TicketTask, auditFeedback?: string[]): string {
   const lines = [
     `工单号：${task.ticketId}`,
     `标题：${task.title}`,
@@ -247,6 +250,11 @@ function renderTicketContext(task: TicketTask): string {
     lines.push("代码版本：未提供（代码工具未启用；若需要代码定位，请在 missingMaterial 中说明缺代码版本）");
   }
   lines.push("");
+  if (auditFeedback && auditFeedback.length > 0) {
+    lines.push("===== 上一轮独立审计反馈（定向回流，本轮必须针对性解决）=====");
+    for (const line of auditFeedback) lines.push(line);
+    lines.push("");
+  }
   lines.push("请按系统提示完成预检诊断：按需查询材料，最后用 submit_report 提交报告。");
   return lines.join("\n");
 }
@@ -403,8 +411,8 @@ export class PiDiagnosisEngine {
     }, { once: true });
     const composed = AbortSignal.any([signal, timeoutSignal]);
 
-    // 证据登记（ID 由这里签发）+ 工具观察（按 toolCallId 存：真机见过并行工具调用）
-    const evidenceStore = new EvidenceStore(runId);
+    // 证据登记（ID 由这里签发）：审计回流场景用外层注入的共享证据池，ID 跨尝试全局唯一
+    const evidenceStore = context.evidenceStore ?? new EvidenceStore(runId);
     const observationByCallId = new Map<string, QueryObservation>();
     let lastQueryKey: string | null = null; // 空转守卫用：上次日志查询的指纹
     const browserRunner = this.browserDriver
@@ -822,7 +830,7 @@ export class PiDiagnosisEngine {
       }, { once: true });
 
       const promptPromise = session
-        .prompt(renderTicketContext(task))
+        .prompt(renderTicketContext(task, context.auditFeedback))
         .then(
           () => {
             promptDone = true;

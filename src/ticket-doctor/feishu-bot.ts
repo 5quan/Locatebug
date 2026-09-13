@@ -7,10 +7,9 @@ import { fileURLToPath } from "node:url";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import type { RepoBinding, RunContext, TicketTask } from "./contracts.ts";
 import { GitCodeSource, MultiRepoCodeSource, resolveRepoSha } from "./code-sources.ts";
-import { FakeDiagnosisEngine } from "./fake-engine.ts";
+import { auditModeFromEnv, createEngineStack } from "./engine-factory.ts";
 import { FeishuTicketBridge, type FeishuMessenger } from "./feishu-adapter.ts";
 import { FileLogSource } from "./log-sources.ts";
-import { PiDiagnosisEngine } from "./pi-adapter.ts";
 import { JsonlRunLog } from "./run-log.ts";
 import { SkillRegistry } from "./skill-registry.ts";
 import { TicketDoctorRuntime } from "./runtime.ts";
@@ -94,27 +93,27 @@ async function prepareContext(task: TicketTask): Promise<Partial<RunContext>> {
   };
 }
 
-const engine = process.env.DOCTOR_ENGINE === "fake"
-  ? new FakeDiagnosisEngine({ logSource })
-  : new PiDiagnosisEngine({
-      logSource,
-      codeSource: async (_task, context) => {
-        if (!context.repos || context.repos.length === 0) return undefined;
-        const sources = [];
-        for (const binding of context.repos) {
-          const dir = repoConfig[binding.repoId];
-          if (!dir) continue;
-          sources.push(
-            await GitCodeSource.create(dir, { commit: binding.sha, repoId: binding.repoId }),
-          );
-        }
-        if (sources.length === 0) return undefined;
-        return sources.length === 1 ? sources[0] : new MultiRepoCodeSource(sources);
-      },
-      provider: "deepseek",
-      modelId: "deepseek-v4-flash",
-      apiKey: process.env.DEEPSEEK_API_KEY,
-    });
+const engine = createEngineStack({
+  kind: process.env.DOCTOR_ENGINE === "fake" ? "fake" : "pi",
+  logSource,
+  auditMode: auditModeFromEnv(process.env.DOCTOR_AUDIT),
+  codeSource: async (_task, context) => {
+    if (!context.repos || context.repos.length === 0) return undefined;
+    const sources = [];
+    for (const binding of context.repos) {
+      const dir = repoConfig[binding.repoId];
+      if (!dir) continue;
+      sources.push(
+        await GitCodeSource.create(dir, { commit: binding.sha, repoId: binding.repoId }),
+      );
+    }
+    if (sources.length === 0) return undefined;
+    return sources.length === 1 ? sources[0] : new MultiRepoCodeSource(sources);
+  },
+  provider: "deepseek",
+  modelId: "deepseek-v4-flash",
+  apiKey: process.env.DEEPSEEK_API_KEY,
+});
 
 const runtime = new TicketDoctorRuntime({
   engine,

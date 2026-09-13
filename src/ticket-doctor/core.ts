@@ -4,8 +4,11 @@
 
 import type {
   AgentEvent,
+  AuditDimension,
+  AuditVerdict,
   DiagnosisReport,
   QueryObservation,
+  RootCauseHypothesis,
   TicketTask,
 } from "./contracts.ts";
 
@@ -104,6 +107,17 @@ const REPRODUCTION_LABEL: Record<NonNullable<ReproductionStatus>, string> = {
 
 type ReproductionStatus = DiagnosisReport["reproductionStatus"];
 
+const AUDIT_VERDICT_LABEL: Record<AuditVerdict, string> = {
+  pass: "独立审计：通过",
+  degrade: "独立审计：有瑕疵（已标注，供参考）",
+  reject: "独立审计：未通过（已按意见降级交付）",
+};
+
+const AUDIT_DIMENSION_LABEL: Record<AuditDimension, string> = {
+  reproduction_validity: "复现有效性",
+  attribution_sufficiency: "归因充分性",
+};
+
 function formatTime(ms: number): string {
   // 日志证据统一用东八区展示，和测试同学看日志平台的习惯一致
   return new Date(ms).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
@@ -124,6 +138,13 @@ export function renderTicketComment(task: TicketTask, report: DiagnosisReport): 
   lines.push("");
   if (report.reproductionStatus) {
     lines.push(`**复现状态：${REPRODUCTION_LABEL[report.reproductionStatus]}**`);
+    lines.push("");
+  }
+  if (report.audit) {
+    lines.push(`**${AUDIT_VERDICT_LABEL[report.audit.verdict]}**`);
+    for (const issue of report.audit.issues) {
+      lines.push(`- 审计意见[${AUDIT_DIMENSION_LABEL[issue.dimension]}]：${issue.description}${issue.evidenceRef ? `（核对：${issue.evidenceRef}）` : ""}`);
+    }
     lines.push("");
   }
   if (report.hypotheses.length === 0) {
@@ -204,6 +225,10 @@ export function describeEvent(event: AgentEvent): string {
       return `[${event.sequence}] observation_added ${event.name} status=${event.observation.status} 证据=${event.observation.evidence.length}条`;
     case "usage_reported":
       return `[${event.sequence}] usage_reported ${JSON.stringify(event.usage)}`;
+    case "audit_completed":
+      return `[${event.sequence}] audit_completed 第${event.attempt}次 ${event.conclusion.verdict}（问题 ${event.conclusion.issues.length} 条）`;
+    case "reflow_triggered":
+      return `[${event.sequence}] reflow_triggered 第${event.attempt}次 定向回流 ${event.targets.join("+")}`;
     case "run_completed":
       return `[${event.sequence}] run_completed status=${event.status}`;
     case "run_failed":

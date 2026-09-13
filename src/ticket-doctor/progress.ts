@@ -91,6 +91,12 @@ export function projectProgress(events: AgentEvent[]): RunProgress {
       case "usage_reported":
         progress.usage = event.usage;
         break;
+      case "audit_completed":
+        // 审计不改变阶段：通过/降级随后进入终态，打回则紧跟 reflow_triggered
+        break;
+      case "reflow_triggered":
+        progress.phase = "investigating"; // 定向回流：回到查证（补证/假设修订）
+        break;
       case "run_completed":
         progress.phase = "finished";
         progress.resultStatus = event.status;

@@ -120,7 +120,21 @@
 - [ ] 阶段 4b：真实集成——云效 webhook payload → TicketTask 适配器（含 commit 提取）、真实日志源适配器、诊断备注写回云效（或钉钉通知）。
 - [ ] 阶段 5：golden runs 回归语料与产品验收（skill 退出清单逐条对应测试）。
 
+### 工单预检 Agent：诊断审计与定向回流（2026-09-14 本轮）
+
+针对"模型把局部证据过度归因为根因"和"整轮重试重复犯错"两个问题，落地独立审计 Agent 与程序驱动的定向回流（第三板斧"Agent 评测与调优"的审计与回流专篇在本产品的实现）。
+
+- [x] 独立审计契约与端口：`AuditInput`（原始工单 + 待审报告 + 工具轨迹摘要 + 全部证据，刻意不含生成者中间推理）；`DiagnosisAuditor` 端口；`audit_completed` / `reflow_triggered` 事件进运行日志。
+- [x] `pi-auditor.ts`：独立审计 Agent（形态二 Standalone Auditor）——对抗视角提示词（默认假设报告有问题，逐项 pass/fail + 理由，找不到问题必须明说）、TypeBox 强制的三档结论（pass/degrade/reject）+ 结构化问题清单（维度/描述/证据引用/假设定位/回流方向建议）。
+- [x] `fake-auditor.ts`：确定性审计（机械信号：宣称复现但轨迹无浏览器复现记录、verified 无证据引用等），fake 引擎链路零成本跑通完整回流闭环。
+- [x] `audited-engine.ts`：回流编排引擎（仍是 DiagnosisEngine，Runtime 无感知）——pass 交付 / degrade 定向降级交付 / reject 按问题类型定向回流（补证 supplement_evidence、假设修订 revise_hypothesis）；四道闸门：回流预算（默认 2 次）、失败历史注入下一轮（去重反馈）、同一维度连续两次失败熔断升级、可选 token 累计预算；超出预算不交付空结果——保留已核实结论（`mergePreserved`）与待验证项，status 兜底 partial。
+- [x] `audit-actions.ts`：审计结论→程序动作的纯函数（定向降级映射、复现有效性异议强制 reproductionStatus=indeterminate、verified 门槛塌陷、corrections 全程留痕）。
+- [x] 证据池跨尝试共享（`RunContext.evidenceStore`）：回流的补证进入同一池，证据 ID 全局唯一，已核实结论在降级后仍可精确追溯；`RunContext.auditFeedback` 注入生成器（去重反馈），假引擎脚本可感知。
+- [x] 接线：`engine-factory.ts` 统一组装（server / feishu-bot 共用），`DOCTOR_AUDIT=on|off|fake`（默认 on）；系统提示词新增审计反馈处理规则。
+- [x] 测试：`reflow.test.ts` 9 项（PASS / 补证回流 / 预算耗尽降级 / 熔断 / DEGRADE / token 预算 / 生成器失败透传 / 审计失败如实声明 / fake 集成），全套 60 项通过。真机审计（pi-auditor × 模型）待环境接入后验收。
+
 ### 工单预检 Agent：复现驱动定位 / 证据约束交付 / Skill 基础（2026-09-13 本轮）
+
 
 按"浏览器复现 + 源码协同定位"目标方案完成 P0（基础补齐）、P1（证据与 Skill 基础）、P2 的离线可测部分（浏览器执行器 + 契约）。真实 Playwright 驱动、业务测试环境、反馈优化器（P3）与持久化投递（P4）未开始。
 
