@@ -55,7 +55,9 @@ async function runOnce(
 ): Promise<AgentEvent[]> {
   const engine = new FakeDiagnosisEngine({ logSource, script, maxIterations });
   const events: AgentEvent[] = [];
-  for await (const event of engine.run(task, AbortSignal.timeout(5_000))) {
+  // runId 由调用方（生产环境是 Runtime）生成并传入，引擎不自行计算
+  const context = { runId: `run_${task.ticketId}`, ticketId: task.ticketId };
+  for await (const event of engine.run(task, AbortSignal.timeout(5_000), context)) {
     events.push(event);
   }
   return events;

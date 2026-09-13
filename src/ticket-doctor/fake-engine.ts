@@ -17,6 +17,7 @@ import type {
   LogQueryIntent,
   QueryObservation,
   LogSource,
+  RunContext,
   TicketTask,
 } from "./contracts.ts";
 import { MAX_EXCERPT_CHARS } from "./limits.ts";
@@ -34,7 +35,6 @@ export interface FakeLoopState {
 export interface FakeDiagnosisOptions {
   logSource: LogSource;
   script?: FakeModelScript; // 缺省用 defaultScript；测试用自定义脚本来触发各种边界
-  runId?: string;
   maxIterations?: number; // 默认 3：防止"模型"无限调工具
   maxExcerptChars?: number; // 默认 200：工具结果按不可信输入处理，进证据前先截断
 }
@@ -101,6 +101,8 @@ export const defaultScript: FakeModelScript = (state) => {
           cause: `时间窗内捕获到 ${errorEvidence.length} 条错误日志，最早的一条最可疑（假引擎只做确定性摘取，不做真实归因）`,
           confidence: "low",
           evidence: errorEvidence.slice(0, 3),
+          status: "candidate", // 只摘日志不归因 → 按契约只能算候选原因
+          pendingChecks: ["按证据中的 traceId 做全链路确认", "浏览器/接口复现以确认因果关系"],
         },
       ],
       suggestedNextSteps: [
@@ -121,8 +123,9 @@ export class FakeDiagnosisEngine {
     this.opts = opts;
   }
 
-  async *run(task: TicketTask, signal: AbortSignal): AsyncGenerator<AgentEvent> {
-    const runId = this.opts.runId ?? `run_${task.ticketId}`;
+  async *run(task: TicketTask, signal: AbortSignal, context: RunContext): AsyncGenerator<AgentEvent> {
+    // runId 由 Runtime 生成并传入（引擎不得自行计算；评测对照的前提）
+    const runId = context.runId;
     const script = this.opts.script ?? defaultScript;
     const maxIterations = this.opts.maxIterations ?? 3;
     const maxExcerptChars = this.opts.maxExcerptChars ?? MAX_EXCERPT_CHARS;
@@ -139,6 +142,17 @@ export class FakeDiagnosisEngine {
     });
 
     yield { type: "run_started", runId, sequence: ++seq, timestamp: now() };
+
+    // Skill 版本由调用方在运行开始时固定；假引擎同样如实记录（事件语义与真引擎一致）
+    if (context.skill) {
+      yield {
+        type: "skill_selected",
+        runId,
+        sequence: ++seq,
+        skill: context.skill,
+        timestamp: now(),
+      };
+    }
 
     const observations: QueryObservation[] = [];
     let prevProgressKey: string | null = null;

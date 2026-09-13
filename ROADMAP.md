@@ -120,6 +120,18 @@
 - [ ] 阶段 4b：真实集成——云效 webhook payload → TicketTask 适配器（含 commit 提取）、真实日志源适配器、诊断备注写回云效（或钉钉通知）。
 - [ ] 阶段 5：golden runs 回归语料与产品验收（skill 退出清单逐条对应测试）。
 
+### 工单预检 Agent：复现驱动定位 / 证据约束交付 / Skill 基础（2026-09-13 本轮）
+
+按"浏览器复现 + 源码协同定位"目标方案完成 P0（基础补齐）、P1（证据与 Skill 基础）、P2 的离线可测部分（浏览器执行器 + 契约）。真实 Playwright 驱动、业务测试环境、反馈优化器（P3）与持久化投递（P4）未开始。
+
+- [x] P0——基础补齐：HTTP/飞书入口 commit 透传（此前 `validateTicket` 丢弃 commit，HTTP 路径永远开不了代码工具）；`DOCTOR_REPOS` 业务仓库映射 + `prepareContext` 在运行开始把 rev 解析成完整 SHA（前后端分仓逐仓解析、逐仓记录，`MultiRepoCodeSource` 按 repoId 路由）；ticketId / requestKey / runId 身份分离（runId 由 Runtime 生成传入引擎，同一工单不同 requestKey = 两次独立运行，幂等 claim 改为 `(ticketId, requestKey)` 独占创建）；工具失败留痕（error observation + SDK 层失败补发 tool_completed）；用量改为整 run 累计；Runtime in-flight 保活句柄修复"挂死引擎等不到超时"的事件循环排空问题。
+- [x] P1——证据与 Skill 基础：`evidence-store.ts`（工具执行时签发证据 ID，绑定 runId/toolCallId/版本/位置）；`report-validator.ts`（引用存在性与运行归属、版本一致性校验；强制降级规则：零有效证据→low+candidate、verified 需复现确认、reproduced 需浏览器证据、complete 需零工具失败；submit_report 草稿→校验→打回/降级循环，修订上限 2 次）；字符串匹配反编造核验下线；`skill-registry.ts`（目录布局 `<root>/<id>/<version>/SKILL.md`，sha256 内容哈希，运行开始固定版本，`skill_selected` 事件进事件流）+ 默认 Skill `skills/ticket-triage/0.1.0`。
+- [x] P2（离线部分）——复现驱动定位：契约（TicketTask 增 entryUrl/预期实际结果/复现步骤/环境标识/多仓版本；受约束 `ReproductionPlan`；`BrowserRunResult` 执行状态与复现状态分离）；`browser-runner.ts`（计划白名单校验通过才开浏览器；复现状态由 assert 步骤结果推导，不信任驱动自报；驱动异常=环境阻塞；取证截断进证据池）；`BrowserDriver` 端口 + 测试用脚本化假驱动。真实 Playwright 驱动与业务测试环境接入未开始。
+- [x] 测试：51 项全部通过（原 25 项适配 + 新增 evidence/validator/skill/browser 与 runId 分离测试）；`smoke/smoke.ts` 冒烟覆盖 commit 透传、skill_selected、requestKey 幂等、SHA 钉死、坏 commit fail fast。无 TypeScript 编译器可用（npm 不在环境内），未做完整类型检查，全部模块通过 Node 类型剥离语法校验。
+- [ ] P2（环境部分）：接入一个可重置数据的业务测试环境 + Playwright 驱动，覆盖"前端参数错误 / 后端业务失败 / 前端展示错误"三类可控案例与登录失效、元素缺失等执行失败案例。
+- [ ] P3——反馈优化：案例集（Agent 可见 / 评测器可见物理隔离）、开发反馈结构化记录、候选修订生成、新旧版本重跑对比（重跑已具备：runId 分离 + skill 版本固定）。
+- [ ] P4——交付完善：报告投递状态机（pending→sending→delivered/failed 持久化）、失败重试、真实工单入口验收。
+
 ### 多 Agent：设计完成，实现未开始
 
 当前阶段状态：

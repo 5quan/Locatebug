@@ -57,10 +57,21 @@ const TASK: TicketTask = {
   commit: "HEAD", // 提测带版本：本演示钉住本仓库当前版本，代码工具（search_code/read_code）启用
 };
 
+// 运行开始时解析完整 SHA：版本一次性钉死（同次诊断内不会因 HEAD 移动读到不同版本）
+const codeSource = TASK.commit
+  ? await GitCodeSource.create(PROJECT_ROOT, { commit: TASK.commit, repoId: "app" })
+  : undefined;
+const RUN_CONTEXT = {
+  runId: `run_${TASK.ticketId}_demo`,
+  ticketId: TASK.ticketId,
+  ...(codeSource?.revision
+    ? { repos: [{ repoId: codeSource.repoId, rev: TASK.commit ?? "HEAD", sha: codeSource.revision }] }
+    : {}),
+};
+
 const engine = new PiDiagnosisEngine({
   logSource: new FileLogSource(SAMPLES_DIR),
-  codeSource: (task) =>
-    task.commit ? new GitCodeSource(PROJECT_ROOT, { commit: task.commit }) : undefined,
+  codeSource: codeSource,
   provider: "deepseek",
   modelId: "deepseek-v4-flash",
   apiKey: process.env.DEEPSEEK_API_KEY, // 显式注入，比依赖 SDK 的环境变量发现更确定
@@ -71,7 +82,7 @@ const engine = new PiDiagnosisEngine({
 console.log(`模型：deepseek/deepseek-v4-flash（真机调用）\n`);
 
 const events: AgentEvent[] = [];
-for await (const event of engine.run(TASK, AbortSignal.timeout(180_000))) {
+for await (const event of engine.run(TASK, AbortSignal.timeout(180_000), RUN_CONTEXT)) {
   events.push(event);
   console.log(describeEvent(event));
 }
@@ -84,10 +95,14 @@ const report = extractReport(events);
 console.log("\n---- 将写回工单备注的内容 ----\n");
 if (report) {
   console.log(renderTicketComment(TASK, report));
-  const unverified = report.hypotheses
-    .flatMap((h) => h.evidence)
-    .filter((e) => e.source.startsWith("unverified")).length;
-  console.log(`\n[统计] 假设 ${report.hypotheses.length} 条，其中未核实证据 ${unverified} 条`);
+  const byStatus = report.hypotheses.reduce<Record<string, number>>((acc, h) => {
+    acc[h.status ?? "unclassified"] = (acc[h.status ?? "unclassified"] ?? 0) + 1;
+    return acc;
+  }, {});
+  console.log(
+    `\n[统计] 假设 ${report.hypotheses.length} 条（${JSON.stringify(byStatus)}），` +
+      `证据 ${report.hypotheses.reduce((n, h) => n + h.evidence.length, 0)} 条（均有 ID 与系统核验的来源）`,
+  );
 } else {
   console.log("（本次运行没有产出报告，见上方终态事件）");
 }

@@ -85,9 +85,35 @@ const CONFIDENCE_LABEL: Record<RootCauseConfidence, string> = {
 
 type RootCauseConfidence = DiagnosisReport["hypotheses"][number]["confidence"];
 
+// 定位状态标签：报告里必须能区分"根因已验证"和"候选原因"，两者不允许混用措辞
+const HYPOTHESIS_STATUS_LABEL: Record<NonNullable<RootCauseHypothesisStatus>, string> = {
+  verified: "根因已验证",
+  supported: "已获支持",
+  candidate: "候选原因",
+  refuted: "已排除",
+};
+
+type RootCauseHypothesisStatus = DiagnosisReport["hypotheses"][number]["status"];
+
+const REPRODUCTION_LABEL: Record<NonNullable<ReproductionStatus>, string> = {
+  reproduced: "异常已复现",
+  not_reproduced: "未复现",
+  indeterminate: "复现状态无法判断",
+  blocked: "复现被环境阻塞",
+};
+
+type ReproductionStatus = DiagnosisReport["reproductionStatus"];
+
 function formatTime(ms: number): string {
   // 日志证据统一用东八区展示，和测试同学看日志平台的习惯一致
   return new Date(ms).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
+}
+
+// 代码证据的精确定位（系统从 codeRef 渲染，模型不负责填行号）
+function renderCodeRef(ref: NonNullable<import("./contracts.ts").Evidence["codeRef"]>): string {
+  const shortSha = ref.sha.length > 10 ? ref.sha.slice(0, 10) : ref.sha;
+  const line = ref.startLine === ref.endLine ? `L${ref.startLine}` : `L${ref.startLine}-L${ref.endLine}`;
+  return `${ref.repoId}@${shortSha} ${ref.path}#${line}`;
 }
 
 export function renderTicketComment(task: TicketTask, report: DiagnosisReport): string {
@@ -96,6 +122,10 @@ export function renderTicketComment(task: TicketTask, report: DiagnosisReport): 
   lines.push("");
   lines.push(`> 由 ticket-doctor 自动生成（ticketId=${task.ticketId}），供接手开发参考，非最终结论。`);
   lines.push("");
+  if (report.reproductionStatus) {
+    lines.push(`**复现状态：${REPRODUCTION_LABEL[report.reproductionStatus]}**`);
+    lines.push("");
+  }
   if (report.hypotheses.length === 0) {
     lines.push(
       report.status === "partial"
@@ -106,11 +136,23 @@ export function renderTicketComment(task: TicketTask, report: DiagnosisReport): 
     lines.push("## 根因假设");
     lines.push("");
     report.hypotheses.forEach((h, i) => {
-      lines.push(`${i + 1}. [置信度：${CONFIDENCE_LABEL[h.confidence]}] ${h.cause}`);
+      const statusLabel = h.status ? HYPOTHESIS_STATUS_LABEL[h.status] : undefined;
+      const status = statusLabel ? `定位状态：${statusLabel}` : undefined;
+      lines.push(
+        `${i + 1}. [置信度：${CONFIDENCE_LABEL[h.confidence]}]${status ? `[${status}]` : ""} ${h.cause}`,
+      );
       for (const ev of h.evidence) {
+        const id = ev.evidenceId ? `${ev.evidenceId} ` : "";
         const time = ev.time ? formatTime(ev.time) : "";
-        lines.push(`   - 证据：${time}${time ? " " : ""}${ev.level ? `[${ev.level}]` : ""} ${ev.excerpt}`.trimEnd());
-        lines.push(`     来源：${ev.source}`);
+        lines.push(
+          `   - 证据 ${id}${time}${time ? " " : ""}${ev.level ? `[${ev.level}]` : ""} ${ev.excerpt}`.trimEnd(),
+        );
+        lines.push(`     来源：${ev.codeRef ? renderCodeRef(ev.codeRef) : ev.source}`);
+      }
+      if (h.pendingChecks && h.pendingChecks.length > 0) {
+        for (const check of h.pendingChecks) {
+          lines.push(`   - 待验证：${check}`);
+        }
       }
     });
     lines.push("");
@@ -123,11 +165,20 @@ export function renderTicketComment(task: TicketTask, report: DiagnosisReport): 
     }
     lines.push("");
   }
-  if (report.status === "partial") {
+  if (report.status === "partial" || (report.missingMaterial && report.missingMaterial.length > 0)) {
     lines.push("## 局限（本次为部分结果）");
     lines.push("");
     for (const missing of report.missingMaterial ?? []) {
       lines.push(`- 缺失材料：${missing}`);
+    }
+    for (const correction of report.corrections ?? []) {
+      lines.push(`- 校验修正：${correction}`);
+    }
+  } else if (report.corrections && report.corrections.length > 0) {
+    lines.push("## 校验修正（系统强制）");
+    lines.push("");
+    for (const correction of report.corrections) {
+      lines.push(`- ${correction}`);
     }
   }
   return lines.join("\n");
@@ -139,6 +190,8 @@ export function describeEvent(event: AgentEvent): string {
   switch (event.type) {
     case "run_started":
       return `[${event.sequence}] run_started runId=${event.runId}`;
+    case "skill_selected":
+      return `[${event.sequence}] skill_selected ${event.skill.id}@${event.skill.version} sha=${event.skill.contentHash.slice(0, 12)}`;
     case "decision_made":
       return event.decision.kind === "call_tool"
         ? `[${event.sequence}] decision_made call_tool ${event.decision.name} ${JSON.stringify(event.decision.arguments)}`

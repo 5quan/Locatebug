@@ -93,3 +93,34 @@
 - **归一化**：`search_code`/`read_code` 与 `query_logs` 同表映射；`observation_added` 用 `QueryObservation` 判别联合（kind: logs/code_search/code_read）；观察按 `toolCallId` 建 Map（真机见过并行工具调用，"最后一个"不可靠）。
 - **预算**：代码工具独立计数（默认 10 次 → `budget_tools`），与日志预算分开；**预算透明化**——真机发现模型不知道预算会把次数烧光被硬刹车掐死（run_failed 无报告），把预算数字写进系统提示词后，同一工单在预算内交卷（3 次日志 + 7 次代码 → partial 报告、0 未核实证据）。
 - **核验**：日志条目与代码行统一进证据池（`{source, text}`），submit_report 的 excerpt 命中任一即算核实——代码证据 provenance 形如 `git-code-source@<commit> | path#L行号`。
+
+## 8. 证据 ID 化与复现驱动定位（2026-09-13，替代 §3.2 / §7 的字符串匹配核验）
+
+> §3.2 的子串匹配核验与 §7 的"统一证据池字符串命中"已被本轮替换（结构性问题：相同代码出现在
+> 多个文件时字符串匹配会关联错位；短引用会命中无关材料；空证据不触发降级）。以下为现行机制。
+
+- **证据 ID**：`EvidenceStore` 在工具执行时签发运行内唯一 ID（E1、E2…），每条证据绑定
+  runId / toolCallId / 采集时间；代码证据带 `codeRef{repoId, sha, path, 行范围}`（系统填写）。
+  工具结果文本带 `[E#]` 前缀给模型；`submit_report` 只引用 `evidenceIds`，不再复述原文与行号。
+- **报告校验器**（`report-validator.ts`，纯函数可测）：确定性检查（ID 存在且属于本次运行、
+  版本 SHA 与运行钉死值一致）→ 不通过打回（revise）；强制降级（零有效证据 → low + candidate、
+  verified 需复现确认、reproduced 需浏览器证据、complete 需零工具失败 + 无 missingMaterial +
+  有假设必有有效证据）→ 系统改判并记录 `corrections`。修订轮次（默认 2 次）用尽后接受强制降级版。
+- **runId 由 Runtime 生成**：`DiagnosisEngine.run(task, signal, context)` 第三参必传 `RunContext`
+  （runId / requestKey / repos 完整 SHA / skill 绑定）；同一工单不同 requestKey = 两次独立运行，
+  这是新旧 Skill 对照评测的前提。幂等键从 ticketId 换成 (ticketId, requestKey)，claim 由
+  `RunLog.claimTicket` 的 wx 独占创建实现。
+- **版本固定**：`GitCodeSource.create()` 在运行开始把 rev 解析成完整 SHA（`resolveRepoSha`），
+  运行内所有查询读同一版本；多仓由 `MultiRepoCodeSource` 按 `intent.repoId` 路由。
+- **浏览器工具**：`run_browser_check`（配置 `browserDriver` 且工单有 `entryUrl` 才注册）。
+  模型只提交受约束操作计划（goto/reload/fill/click/press/wait/assert_visible/assert_text），
+  `BrowserRunner.validatePlan` 白名单校验通过才开浏览器；复现状态由执行器从 assert 步骤结果
+  推导，不信任驱动自报。执行状态（completed/failed/blocked）与复现状态（reproduced/
+  not_reproduced/indeterminate）分开记录。
+- **工具失败留痕**：所有工具 execute 的 catch 分支登记 error observation 后 rethrow；SDK 层
+  失败（无观察记录）在 `tool_execution_end(isError)` 补发 `tool_completed(error)`。评测可据此
+  区分"Skill 判断错"与"工具没跑成"。
+- **用量累计**：`agent_end` 对全部 assistant 消息的 usage 求和（此前只取最后一条）。
+- **Skill 注入**：`RunContext.skill`（SkillRegistry 在运行开始选定，含 sha256 内容哈希）→
+  `skill_selected` 事件 + 追加进 system prompt；不走 SDK 文件发现（`getSkills` 保持空）。
+- **终态优先级**不变（§3.6）；浏览器超限并入 `budget_tools`。

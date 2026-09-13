@@ -17,9 +17,10 @@ const SAMPLES_DIR = fileURLToPath(new URL("../../samples/", import.meta.url));
 
 async function runScenario(name: string, task: TicketTask, logSource: LogSource): Promise<void> {
   console.log(`\n========== 场景：${name} ==========`);
-  const engine = new FakeDiagnosisEngine({ logSource, runId: `run_${task.ticketId}` });
+  const engine = new FakeDiagnosisEngine({ logSource });
   const events: AgentEvent[] = [];
-  for await (const event of engine.run(task, AbortSignal.timeout(10_000))) {
+  const context = { runId: `run_${task.ticketId}`, ticketId: task.ticketId };
+  for await (const event of engine.run(task, AbortSignal.timeout(10_000), context)) {
     events.push(event);
     console.log(describeEvent(event));
   }

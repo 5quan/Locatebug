@@ -5,12 +5,14 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as Lark from "@larksuiteoapi/node-sdk";
-import { GitCodeSource } from "./code-sources.ts";
+import type { RepoBinding, RunContext, TicketTask } from "./contracts.ts";
+import { GitCodeSource, MultiRepoCodeSource, resolveRepoSha } from "./code-sources.ts";
 import { FakeDiagnosisEngine } from "./fake-engine.ts";
 import { FeishuTicketBridge, type FeishuMessenger } from "./feishu-adapter.ts";
 import { FileLogSource } from "./log-sources.ts";
 import { PiDiagnosisEngine } from "./pi-adapter.ts";
 import { JsonlRunLog } from "./run-log.ts";
+import { SkillRegistry } from "./skill-registry.ts";
 import { TicketDoctorRuntime } from "./runtime.ts";
 
 function loadDotEnv(file: string): void {
@@ -61,13 +63,54 @@ if (!appId || !appSecret) {
 
 const logDir = process.env.DOCTOR_LOG_DIR ?? join(PROJECT_ROOT, "samples");
 const repoDir = process.env.DOCTOR_REPO_DIR ?? PROJECT_ROOT;
+const repoConfig: Record<string, string> = { app: repoDir };
 const logSource = new FileLogSource(logDir);
+const skillRegistry = new SkillRegistry(
+  process.env.DOCTOR_SKILLS_DIR ?? join(PROJECT_ROOT, "skills"),
+);
+
+// 与 server.ts 一致：运行开始时把 commit 解析成完整 SHA 并固定 Skill 版本
+async function prepareContext(task: TicketTask): Promise<Partial<RunContext>> {
+  const repos: RepoBinding[] = [];
+  for (const ref of task.repositories ?? (task.commit ? [{ repoId: "app", rev: task.commit }] : [])) {
+    const dir = repoConfig[ref.repoId];
+    if (!dir) continue; // 飞书自由文本场景只有一个业务仓，未配置的仓库跳过（缺材料走 partial 路径）
+    const rev = ref.rev ?? "HEAD";
+    repos.push({ repoId: ref.repoId, rev, sha: await resolveRepoSha(dir, rev) });
+  }
+  const skill = await skillRegistry.select(process.env.DOCTOR_SKILL_ID);
+  return {
+    ...(repos.length > 0 ? { repos } : {}),
+    ...(skill
+      ? {
+          skill: {
+            id: skill.id,
+            version: skill.version,
+            contentHash: skill.contentHash,
+            source: skill.sourceDir,
+          },
+        }
+      : {}),
+  };
+}
+
 const engine = process.env.DOCTOR_ENGINE === "fake"
   ? new FakeDiagnosisEngine({ logSource })
   : new PiDiagnosisEngine({
       logSource,
-      codeSource: (task) =>
-        task.commit ? new GitCodeSource(repoDir, { commit: task.commit }) : undefined,
+      codeSource: async (_task, context) => {
+        if (!context.repos || context.repos.length === 0) return undefined;
+        const sources = [];
+        for (const binding of context.repos) {
+          const dir = repoConfig[binding.repoId];
+          if (!dir) continue;
+          sources.push(
+            await GitCodeSource.create(dir, { commit: binding.sha, repoId: binding.repoId }),
+          );
+        }
+        if (sources.length === 0) return undefined;
+        return sources.length === 1 ? sources[0] : new MultiRepoCodeSource(sources);
+      },
       provider: "deepseek",
       modelId: "deepseek-v4-flash",
       apiKey: process.env.DEEPSEEK_API_KEY,
@@ -76,6 +119,7 @@ const engine = process.env.DOCTOR_ENGINE === "fake"
 const runtime = new TicketDoctorRuntime({
   engine,
   runLog: new JsonlRunLog(join(PROJECT_ROOT, ".runs")),
+  prepareContext,
 });
 const client = new Lark.Client({ appId, appSecret });
 const wsClient = new Lark.WSClient({

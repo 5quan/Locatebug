@@ -23,15 +23,16 @@ const TASK: TicketTask = {
   occurredAt: Date.parse("2026-09-06T10:02:00+08:00"),
 };
 
-// 引擎桩：按脚本吐事件，数调用次数——Runtime 测试不该碰真引擎
+// 引擎桩：按脚本吐事件，数调用次数——Runtime 测试不该碰真引擎。
+// runId 由 Runtime 生成并通过 context 传入（引擎不得自行计算），脚本用 context.runId。
 function scriptedEngine(
-  script: (task: TicketTask) => AgentEvent[],
+  script: (task: TicketTask, context: import("./contracts.ts").RunContext) => AgentEvent[],
   counter: { calls: number },
 ): DiagnosisEngine {
   return {
-    run: async function* (task, signal) {
+    run: async function* (task, signal, context) {
       counter.calls++;
-      for (const event of script(task)) {
+      for (const event of script(task, context)) {
         if (signal?.aborted) return;
         yield event;
       }
@@ -74,33 +75,58 @@ async function makeRuntime(
   return { runtime: new TicketDoctorRuntime({ engine, runLog: new JsonlRunLog(dir) }), dir };
 }
 
-test("幂等：同一工单提交两次，引擎只跑一次，事件完整落库", async () => {
+test("幂等：同一工单同一提交内容只诊断一次，事件完整落库", async () => {
   const counter = { calls: 0 };
-  const { runtime } = await makeRuntime(scriptedEngine(() => makeEvents("run_BUG-3001"), counter));
+  const { runtime } = await makeRuntime(scriptedEngine((_task, context) => makeEvents(context.runId), counter));
 
   const first = await runtime.submit(TASK);
   assert.equal(first.accepted, true);
+  assert.match(first.runId, /^run_BUG-3001_[0-9a-z]+_[0-9a-f]+$/, "runId 由 Runtime 生成：run_<ticketId>_<时间>_<随机>");
   await runtime.waitUntilDone(first.runId);
 
   const second = await runtime.submit(TASK);
   assert.equal(second.accepted, false);
   assert.equal(second.reason, "duplicate");
+  assert.equal(second.runId, first.runId, "重复提交返回原运行的 runId");
   assert.equal(counter.calls, 1, "重复提交不得触发第二次诊断");
 
   const events = await runtime.getEvents(first.runId);
   assert.equal(events.length, 3);
   assert.equal(events[0].type, "run_started");
+  assert.equal(events[0].runId, first.runId, "引擎收到的是 Runtime 生成的 runId");
   assert(isTerminalEvent(events[events.length - 1]), "最后一条必须是终态");
 
   const { state } = replayAgentState(events, TASK); // 落库的事件可回放
   assert.equal(state.iterations, 0); // 桩脚本没有 observation_added
 });
 
+test("runId 分离：同一工单不同 requestKey → 两次独立运行（新旧 Skill 对照的前提）", async () => {
+  const counter = { calls: 0 };
+  const { runtime } = await makeRuntime(scriptedEngine((_task, context) => makeEvents(context.runId), counter));
+
+  const first = await runtime.submit(TASK, { requestKey: "req_eval_v1" });
+  const second = await runtime.submit(TASK, { requestKey: "req_eval_v2" });
+  assert.equal(first.accepted, true);
+  assert.equal(second.accepted, true, "同工单、不同 requestKey 允许并行新运行");
+  assert.notEqual(first.runId, second.runId);
+  await runtime.waitUntilDone(first.runId);
+  await runtime.waitUntilDone(second.runId);
+  assert.equal(counter.calls, 2, "两次运行各自执行引擎");
+
+  const firstEvents = await runtime.getEvents(first.runId);
+  const secondEvents = await runtime.getEvents(second.runId);
+  assert.equal(firstEvents[0].runId, first.runId);
+  assert.equal(secondEvents[0].runId, second.runId);
+
+  const runs = await runtime.listRuns();
+  assert.equal(runs.filter((r) => r.ticketId === TASK.ticketId).length, 2);
+});
+
 test("重启后幂等：新 Runtime 实例指向同一目录，重复提交被拒", async () => {
   const counter = { calls: 0 };
   const dir = await mkdtemp(join(tmpdir(), "doctor-runs-"));
   const firstRuntime = new TicketDoctorRuntime({
-    engine: scriptedEngine(() => makeEvents("run_BUG-3001"), counter),
+    engine: scriptedEngine((_task, context) => makeEvents(context.runId), counter),
     runLog: new JsonlRunLog(dir),
   });
   const first = await firstRuntime.submit(TASK);
@@ -108,7 +134,7 @@ test("重启后幂等：新 Runtime 实例指向同一目录，重复提交被�
 
   // 模拟进程重启：全新的 Runtime + RunLog，同一磁盘目录
   const secondRuntime = new TicketDoctorRuntime({
-    engine: scriptedEngine(() => makeEvents("run_BUG-3001"), counter),
+    engine: scriptedEngine((_task, context) => makeEvents(context.runId), counter),
     runLog: new JsonlRunLog(dir),
   });
   const again = await secondRuntime.submit(TASK);
@@ -123,9 +149,9 @@ test("留痕：引擎中途抛异常，Runtime 补 run_failed 落库且为最后
   const runtime = new TicketDoctorRuntime({
     // 先吐 2 条事件再爆炸：专门测 sequence 接排
     engine: {
-      run: async function* (task) {
+      run: async function* (task, _signal, context) {
         counter.calls++;
-        const events = makeEvents(`run_${task.ticketId}`);
+        const events = makeEvents(context.runId);
         yield events[0];
         yield events[1];
         throw new Error("引擎爆炸");
@@ -150,7 +176,7 @@ test("留痕：引擎中途抛异常，Runtime 补 run_failed 落库且为最后
 test("无终态守卫：引擎正常结束却没给终态，Runtime 补 run_failed", async () => {
   const counter = { calls: 0 };
   const { runtime } = await makeRuntime(
-    scriptedEngine((task) => makeEvents(`run_${task.ticketId}`).slice(0, 2), counter),
+    scriptedEngine((_task, context) => makeEvents(context.runId).slice(0, 2), counter),
   );
   const result = await runtime.submit(TASK);
   await runtime.waitUntilDone(result.runId);
@@ -168,13 +194,13 @@ test("可预测终止：引擎挂死不理会信号，Runtime 超时补 budget_t
   const dir = await mkdtemp(join(tmpdir(), "doctor-runs-"));
   const runtime = new TicketDoctorRuntime({
     engine: {
-      run: async function* (task, signal) {
+      run: async function* (task, signal, context) {
         counter.calls++;
         // 挂死：只在收到 abort 后抛错退出
         await new Promise((_resolve, reject) => {
           signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
         });
-        yield* makeEvents(`run_${task.ticketId}`);
+        yield* makeEvents(context.runId);
       },
     },
     runLog: new JsonlRunLog(dir),
@@ -190,4 +216,20 @@ test("可预测终止：引擎挂死不理会信号，Runtime 超时补 budget_t
   if (last.type === "run_failed") {
     assert.equal(last.error.code, "budget_timeout");
   }
+});
+
+test("prepareContext 失败：受理快速失败，不产生 run 文件", async () => {
+  const counter = { calls: 0 };
+  const { runtime, dir } = await makeRuntime(
+    scriptedEngine((_task, context) => makeEvents(context.runId), counter),
+  );
+  const failing = new TicketDoctorRuntime({
+    engine: scriptedEngine((_task, context) => makeEvents(context.runId), counter),
+    runLog: new JsonlRunLog(dir),
+    prepareContext: async () => {
+      throw new Error("坏 commit 引用");
+    },
+  });
+  await assert.rejects(() => failing.submit(TASK), /运行上下文准备失败/);
+  assert.equal(counter.calls, 0, "上下文解析失败不得启动引擎");
 });

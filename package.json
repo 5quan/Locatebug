@@ -8,7 +8,7 @@
     "doctor:real": "node src/ticket-doctor/demo-real.ts",
     "doctor:server": "node src/ticket-doctor/server.ts",
     "doctor:feishu": "node src/ticket-doctor/feishu-bot.ts",
-    "test": "node --test src/ticket-doctor/core.test.ts src/ticket-doctor/runtime.test.ts src/ticket-doctor/progress.test.ts src/ticket-doctor/code-sources.test.ts src/ticket-doctor/feishu-adapter.test.ts"
+    "test": "node --experimental-strip-types --test src/ticket-doctor/core.test.ts src/ticket-doctor/runtime.test.ts src/ticket-doctor/progress.test.ts src/ticket-doctor/code-sources.test.ts src/ticket-doctor/feishu-adapter.test.ts src/ticket-doctor/evidence-store.test.ts src/ticket-doctor/report-validator.test.ts src/ticket-doctor/skill-registry.test.ts src/ticket-doctor/browser-runner.test.ts"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

@@ -2,47 +2,115 @@
 //
 // 铁律（对应 skill「Agent Core & Runtime」）：这个文件不允许 import 任何 SDK。
 // Core 只回答一个问题："一次合法的 bug 诊断运行是什么意思？"
-// 循环由谁驱动（阶段1的假引擎 / 阶段2的 Pi SDK 适配器）、日志从哪来（本地样例 / 真实日志平台），
-// 都属于适配器，通过下面的端口（LogSource / DiagnosisEngine）接进来。
+// 循环由谁驱动（假引擎 / Pi SDK 适配器）、日志从哪来（本地样例 / 真实日志平台）、
+// 浏览器怎么开（Playwright / 假驱动），都属于适配器，通过下面的端口接进来。
 
 // ---------- 输入：一张 bug 工单（对应 skill 的 Task） ----------
 
+// 工单可携带的业务仓库引用（前后端分仓时逐仓给版本）
+export interface RepositoryRef {
+  repoId: string; // 业务仓标识（如 "frontend" / "backend"），由接入层映射到实际仓库目录
+  rev?: string; // 该仓的版本（commit 哈希 / 可解析引用）；缺省 HEAD
+}
+
 export interface TicketTask {
-  ticketId: string; // 幂等键：同一张工单只诊断一次（阶段 3 的 Runtime 负责检查）
+  ticketId: string; // 业务工单身份：跨多次运行保持稳定（幂等键是 requestKey，见 Runtime）
   title: string;
   description: string;
   service?: string; // 所属服务，决定日志检索范围
   occurredAt?: number; // 发生时间（epoch ms），决定日志时间窗
-  commit?: string; // 提测提供的代码版本（commit 哈希/可解析引用）：决定 CodeSource 钉在哪个版本；缺省不给代码工具
+  commit?: string; // 主仓代码版本的便捷字段（等价 repositories: [{ repoId: 主仓, rev: commit }]）
+  // —— 复现驱动定位扩展：页面异常难以区分前端/接口/后端时，给 Agent 可复现的入口 ——
+  entryUrl?: string; // 页面入口 URL（提供后浏览器复现工具才可能启用）
+  expectedBehavior?: string; // 预期行为（业务断言的判定依据）
+  actualBehavior?: string; // 实际行为
+  reproductionSteps?: string[]; // 用户描述的操作步骤（模型生成受约束复现计划的参考）
+  environmentId?: string; // 预先配置的测试环境标识（凭证由环境配置提供，不进工单正文）
+  repositories?: RepositoryRef[]; // 前端、后端等仓库及版本
+}
+
+// ---------- 运行上下文：系统在运行开始时解析并钉死的值 ----------
+// runId 由 Runtime 生成并传给引擎，引擎不得自行计算（评测/对照要求同一工单能跑多次）。
+
+export interface RepoBinding {
+  repoId: string;
+  rev: string; // 工单给的原始引用
+  sha: string; // 运行开始时解析出的完整 commit SHA，本次运行内不可变
+}
+
+export interface SkillBinding {
+  id: string;
+  version: string;
+  contentHash: string; // SKILL.md 原文的 sha256，事件与报告据此追溯"当时用的是哪一版"
+  source?: string; // 加载来源（目录 / 内嵌）
+}
+
+export interface RunContext {
+  runId: string;
+  ticketId: string;
+  requestKey?: string; // 同一次提交的幂等身份（Runtime 计算/透传）
+  repos?: RepoBinding[]; // 本次运行钉死的源码版本（前后端分仓时多份）
+  environmentId?: string;
+  skill?: SkillBinding; // 本次运行固定的 Skill 版本
 }
 
 // ---------- 证据：每条证据必须自带"来源"，否则报告无法审计 ----------
-// 对应 skill「Adapter anchoring」踩坑记录 3：工具结果不带 provenance 是真实事故，
-// 所以证据的 provenance 是字段，不是附件。
+// 证据 ID 由 EvidenceStore 在工具执行时签发；报告通过 evidenceId 精确关联，
+// 模型不再负责复述原文、来源和行号（引用错位的根因就是让模型填这些字段）。
+
+export interface CodeEvidenceRef {
+  repoId: string;
+  sha: string; // 采集时的完整 commit SHA
+  path: string; // 相对路径（posix 分隔符）
+  startLine: number; // 1-based
+  endLine: number;
+}
+
+export interface BrowserEvidenceRef {
+  channel: "page" | "network" | "console" | "screenshot";
+  stepId?: string;
+  url?: string;
+}
 
 export interface Evidence {
-  source: string; // 从哪个日志/代码源、用什么查询条件拿到（unverified 前缀 = 模型引用未命中，见反编造核验）
-  time?: number; // 日志条目时间（epoch ms）；代码证据没有时间，缺省
-  level?: string; // 日志级别（ERROR / WARN / INFO ...）；代码证据缺省
+  evidenceId?: string; // EvidenceStore 签发的运行内唯一 ID（E1、E2…）
+  source: string; // 从哪个日志/代码源、用什么查询条件拿到
+  time?: number; // 日志条目时间（epoch ms）；代码/浏览器证据缺省
+  level?: string; // 日志级别（ERROR / WARN / INFO ...）；其他证据缺省
   excerpt: string; // 截断后的原文片段（工具结果按不可信输入处理，必须限长）
+  truncated?: boolean; // excerpt 是否被截断（模型与渲染层都应知道这不是全文）
+  codeRef?: CodeEvidenceRef; // 代码证据的精确定位（系统填写）
+  browserRef?: BrowserEvidenceRef; // 浏览器证据的来源（系统填写）
 }
 
 // ---------- 输出：结构化诊断报告 ----------
+// 三个正交维度，不允许互相冒充：
+//   status            = 材料完整性（想拿的材料都拿到了吗）
+//   reproductionStatus = 异常是否复现（运行证据说了算，不由模型口头宣布）
+//   hypotheses[].status = 定位状态（verified 必须有有效证据 + 复现确认，否则系统强制降级）
+
+export type HypothesisStatus = "verified" | "supported" | "candidate" | "refuted";
+export type ReproductionStatus = "reproduced" | "not_reproduced" | "indeterminate" | "blocked";
 
 export interface RootCauseHypothesis {
   cause: string;
   confidence: "high" | "medium" | "low";
-  evidence: Evidence[]; // 每个假设必须挂证据，禁止空口断言
+  evidence: Evidence[]; // 校验通过后由系统从 EvidenceStore 解析填充
+  evidenceIds?: string[]; // 模型提交：引用的证据 ID（如 ["E12","E18"]）
+  status?: HypothesisStatus; // 定位状态；最终值由报告校验裁定/修正
+  pendingChecks?: string[]; // 还缺什么验证（待验证项）
 }
 
 export interface DiagnosisReport {
-  status: "complete" | "partial";
+  status: "complete" | "partial"; // 材料完整性。partial 不许假装成功（skill 退出清单）
   hypotheses: RootCauseHypothesis[];
   suggestedNextSteps: string[];
-  missingMaterial?: string[]; // partial 时：还缺什么材料。partial 不许假装成功（skill 退出清单）
+  missingMaterial?: string[]; // partial 时：还缺什么材料
+  reproductionStatus?: ReproductionStatus; // 异常是否已复现（独立于根因验证）
+  corrections?: string[]; // 报告校验时系统施加的强制修正（审计用：模型说了不算的部分）
 }
 
-// ---------- 工具意图与日志端口 ----------
+// ---------- 日志端口 ----------
 
 export interface LogQueryIntent {
   service: string;
@@ -56,7 +124,7 @@ export interface LogEntry {
   message: string;
 }
 
-// 日志源端口：阶段 1 = 本地样例文件；阶段 4 = 真实日志平台（SLS/ELK）适配器。
+// 日志源端口：本地样例文件 / 真实日志平台（SLS/ELK）适配器。
 // name 参与证据 provenance 的生成，所以是接口的一部分。
 export interface LogSource {
   readonly name: string;
@@ -66,40 +134,119 @@ export interface LogSource {
 // ---------- 代码源端口（"看代码排错"定位能力的第二材料源） ----------
 // 与 LogSource 同构：模型通过 search_code / read_code 两个工具提出意图，CodeSource 机械执行。
 // 只读约束落在适配器实现里（路径白名单、限长），Core 只约定数据形状。
+// repoId / revision 由实现暴露：证据登记时必须记录"读的是哪个仓的哪个版本"。
 
 export interface CodeSearchIntent {
   pattern: string; // 大小写敏感的子串匹配（类名 / 方法名 / 异常信息片段）
   glob?: string; // 相对路径子串过滤（如 ".java"），不是通配符
+  repoId?: string; // 多仓时必填（单仓实现可忽略）
 }
 
 export interface CodeReadIntent {
   path: string; // 相对代码根目录的路径
   startLine?: number; // 1-based，默认 1
   endLine?: number; // 含端点；缺省受单次读取上限约束
+  repoId?: string;
 }
 
 export interface CodeSnippet {
-  path: string; // 相对路径（posix 分隔符），模型引用代码时填 location 的依据
+  path: string; // 相对路径（posix 分隔符），代码证据 codeRef 的依据
   line: number; // 1-based 行号
   text: string;
 }
 
 export interface CodeSource {
   readonly name: string;
+  readonly repoId?: string; // 多仓路由用；单仓实现缺省
+  readonly revision?: string; // 解析后的完整 commit SHA（版本一致性的核对基准）
   search(intent: CodeSearchIntent, signal: AbortSignal): Promise<CodeSnippet[]>;
   read(intent: CodeReadIntent, signal: AbortSignal): Promise<CodeSnippet[]>;
 }
 
-// ---------- 决策（对应 skill 的 Decision；本产品 v1 没有 ask_human） ----------
+// ---------- 浏览器复现端口（"复现驱动定位"的运行取证源） ----------
+// 模型只生成受约束的操作计划（白名单动作），由执行器转成 Playwright 操作。
+// 不允许模型生成并执行任意脚本；凭证与数据库隔离由环境配置负责，不进计划。
+
+export type BrowserAction =
+  | { action: "goto"; url: string }
+  | { action: "reload" }
+  | { action: "fill"; selector: string; text: string }
+  | { action: "click"; selector: string }
+  | { action: "press"; key: string }
+  | { action: "wait"; selector?: string; timeoutMs?: number }
+  | { action: "assert_visible"; selector: string }
+  | { action: "assert_text"; selector: string; expected: string; comparison?: "contains" | "equals" };
+
+export interface ReproductionStep {
+  stepId: string;
+  label?: string; // 人话描述（如：填写"详细地址"），进报告轨迹
+  action: BrowserAction;
+}
+
+export interface ReproductionPlan {
+  entryUrl: string;
+  steps: ReproductionStep[];
+}
+
+export interface NetworkExchange {
+  requestId: string;
+  url: string;
+  method: string;
+  status?: number;
+  requestBody?: string; // 已截断
+  responseBody?: string; // 已截断
+  contentType?: string;
+}
+
+export interface BrowserStepResult {
+  stepId: string;
+  action: string; // action 名（如 click）
+  label?: string;
+  status: "passed" | "failed" | "skipped";
+  error?: string;
+  detail?: string; // 断言差异等补充信息
+}
+
+export interface BrowserRunResult {
+  execution: "completed" | "failed" | "blocked"; // 执行状态：跑没跑完、是否环境阻塞
+  reproduction: "reproduced" | "not_reproduced" | "indeterminate"; // 复现状态：业务断言结果
+  steps: BrowserStepResult[];
+  consoleErrors: string[]; // 已截断
+  requests: NetworkExchange[]; // 已截断
+  artifacts?: string[]; // trace / 截图位置
+}
+
+// 浏览器驱动端口：真实实现包 Playwright；测试用脚本化假驱动。
+// 浏览器 context 能隔离 Cookie，隔离不了后端数据库——测试数据批次由环境配置负责。
+export interface BrowserDriver {
+  readonly name: string;
+  execute(plan: ReproductionPlan, signal: AbortSignal): Promise<BrowserRunResult>;
+  dispose?(): Promise<void>;
+}
+
+// 浏览器观察的结论摘要（observation_added 事件里跟在 browser 观察后面）
+export interface BrowserObservationOutcome {
+  execution: BrowserRunResult["execution"];
+  reproduction: BrowserRunResult["reproduction"];
+  steps: BrowserStepResult[];
+  requestCount: number;
+  consoleErrorCount: number;
+}
+
+// ---------- 工具意图与决策 ----------
+
+export interface BrowserCheckIntent extends ReproductionPlan {}
 
 export type Decision =
   | { kind: "call_tool"; name: "query_logs"; arguments: LogQueryIntent }
   | { kind: "call_tool"; name: "search_code"; arguments: CodeSearchIntent }
   | { kind: "call_tool"; name: "read_code"; arguments: CodeReadIntent }
+  | { kind: "call_tool"; name: "run_browser_check"; arguments: BrowserCheckIntent }
   | { kind: "respond"; report: DiagnosisReport };
 
 // 一次查询留下的观察记录（observation_added 事件的 payload）。
-// kind 是判别字段：logs = 日志查询，code_search / code_read = 代码查询（"看代码排错"延伸）。
+// kind 是判别字段：logs = 日志查询，code_search / code_read = 代码查询，
+// browser = 浏览器复现（执行状态与复现状态分开记录）。
 export type QueryObservation =
   | {
       kind: "logs";
@@ -121,19 +268,25 @@ export type QueryObservation =
       status: "success" | "error";
       evidence: Evidence[];
       error?: string;
+    }
+  | {
+      kind: "browser";
+      intent: BrowserCheckIntent;
+      status: "success" | "error";
+      evidence: Evidence[];
+      error?: string;
+      outcome?: BrowserObservationOutcome;
     };
 
 // ---------- 产品级事件（skill 的 AgentEvent 裁剪到本产品需要的子集） ----------
 // 裁剪原则：每个类型都必须能连到本产品的任务/决策/证据/终态，否则不进（防过早抽象）。
-// 相对 skill 最小契约：去掉 human_input_requested/received、run_resumed（v1 全自动）、
-// model_requested（模型信息在 usage_reported.model 里）。
 
 export type RunErrorCode =
   | "budget_iterations" // 超过最大迭代数：反复调工具不收敛
   | "budget_tools" // 超过工具调用次数上限
   | "budget_timeout" // 超过时间预算：日志平台慢或模型卡住
   | "no_progress" // 空转守卫：一轮下来与上一轮进展完全相同
-  | "rate_limited" // 模型/日志平台限流（可重试类，阶段 2 由适配器归一）
+  | "rate_limited" // 模型/日志平台限流（可重试类，由适配器归一）
   | "timeout" // 单次调用超时（可重试类）
   | "auth" // 凭证问题（不可重试）
   | "invalid_tool" // 工具参数不合法（不可重试）
@@ -142,6 +295,13 @@ export type RunErrorCode =
 
 export type AgentEvent =
   | { type: "run_started"; runId: string; sequence: number; timestamp: number }
+  | {
+      type: "skill_selected";
+      runId: string;
+      sequence: number;
+      skill: SkillBinding;
+      timestamp: number;
+    }
   | { type: "decision_made"; runId: string; sequence: number; decision: Decision; timestamp: number }
   | {
       type: "tool_started";
@@ -176,7 +336,7 @@ export type AgentEvent =
       runId: string;
       sequence: number;
       usage: {
-        inputTokens?: number; // deepseek 路径可能缺失（skill verification-log 已知缺口），成本栏要容忍
+        inputTokens?: number; // deepseek 路径可能缺失，成本栏要容忍
         outputTokens?: number;
         toolCalls: number;
         durationMs: number;
@@ -204,10 +364,10 @@ export type AgentEvent =
 
 // ---------- 诊断引擎端口：驱动"最小循环"的角色 ----------
 //
-// 这是 fake/real 语义一致性的锚点：阶段 1 的 FakeDiagnosisEngine 和阶段 2 的 Pi SDK 适配器
-// 实现同一个接口、产出同一种事件流，golden transcript 对比才有意义。
+// fake / real 实现同一个接口、产出同一种事件流，golden transcript 对比才有锚点。
+// context 必传：runId 由 Runtime 生成（评测对照的前提），引擎不得自行计算。
 // signal 是必传参数（skill「Budgets and termination」）：取消必须能穿透到引擎内部。
 
 export interface DiagnosisEngine {
-  run(task: TicketTask, signal: AbortSignal): AsyncIterable<AgentEvent>;
+  run(task: TicketTask, signal: AbortSignal, context: RunContext): AsyncIterable<AgentEvent>;
 }
