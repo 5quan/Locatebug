@@ -3,3 +3,9 @@ src/config.ts
 .sessions/
 .env
 .runs/
+
+# 个人准备文档,不入公开仓库
+HANDOVER.md
+Target.md
+PLAYBOOK-亮点与答辩.md
+RESUME-ticket-doctor.md
